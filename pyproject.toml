@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tinyvla"
+version = "0.1.0"
+description = "Tiny SO-101 MuJoCo and SmolVLA training utilities."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "mujoco",
+  "numpy",
+  "pillow",
+  "safetensors",
+  "torch",
+]
+
+[project.optional-dependencies]
+lerobot = [
+  "lerobot",
+  "pandas",
+  "transformers",
+]
+
+[project.scripts]
+tinyvla-benchmark = "tinyvla.benchmark:main"
+tinyvla-collect = "tinyvla.collect:main"
+tinyvla-dashboard = "tinyvla.dashboard:main"
+tinyvla-dataset-viewer = "tinyvla.dataset_viewer:main"
+tinyvla-eval = "tinyvla.eval:main"
+tinyvla-serve = "tinyvla.server:main"
+tinyvla-train = "tinyvla.train:main"
+
+[tool.setuptools.packages.find]
+include = ["tinyvla*"]

@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
+venv/
+
+# Local data, checkpoints, and generated reports.
+/artifacts/
+/data/
+*.safetensors
+*.parquet
+*.mp4
+*.png
+*.gif

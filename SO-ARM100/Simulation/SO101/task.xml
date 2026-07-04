@@ -1,0 +1,62 @@
+<mujoco model="so101_pickplace_task">
+  <include file="so101_new_calib.xml"/>
+
+  <!-- Collision groups (contype/conaffinity bitmasks):
+         arm jaws  = group 1  (from the arm's "collision" class)
+         table/bin = group 2
+         cubes     = group 2  -> rest on table & bin, but PASS THROUGH the arm
+       so the arm never knocks a cube; the grasp is handled kinematically in code. -->
+  <default>
+    <default class="prop">
+      <geom contype="2" conaffinity="2" friction="1 0.02 0.001"/>
+    </default>
+  </default>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="160" elevation="-20" offwidth="640" offheight="480"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4"
+             rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 3.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" pos="0 0 0" type="plane" material="groundplane"/>
+
+    <!-- fixed camera looking at the arm's workspace -->
+    <camera name="front" pos="0.07 -0.54 0.44" xyaxes="1 0 0 0 0.7 0.72"/>
+
+    <!-- tabletop the props rest on; top surface z=0.075 (group 2 collision) -->
+    <geom name="table" type="box" size="0.12 0.20 0.0375" pos="0.16 0.0 0.0375"
+          rgba="0.76 0.70 0.62 1" contype="2" conaffinity="2"/>
+
+    <!-- destination bin (open-top box) at the near-LEFT; walls in group 2 -->
+    <body name="bin" pos="0.13 -0.075 0.075">
+      <geom type="box" size="0.005 0.035 0.015" pos="0.035 0 0.015" rgba="0.45 0.32 0.2 1" contype="2" conaffinity="2"/>
+      <geom type="box" size="0.005 0.035 0.015" pos="-0.035 0 0.015" rgba="0.45 0.32 0.2 1" contype="2" conaffinity="2"/>
+      <geom type="box" size="0.035 0.005 0.015" pos="0 0.035 0.015" rgba="0.45 0.32 0.2 1" contype="2" conaffinity="2"/>
+      <geom type="box" size="0.035 0.005 0.015" pos="0 -0.035 0.015" rgba="0.45 0.32 0.2 1" contype="2" conaffinity="2"/>
+    </body>
+
+    <!-- destination plate at the near-RIGHT; a low disk, group 2 -->
+    <geom name="plate" type="cylinder" size="0.038 0.003" pos="0.13 0.075 0.078"
+          rgba="0.9 0.9 0.92 1" contype="2" conaffinity="2"/>
+
+    <!-- two cubes as DYNAMIC free bodies: they rest on the table under gravity and
+         drop into the bin when released. Positions randomised each reset. -->
+    <body name="cube_red" pos="0.20 -0.06 0.087" childclass="prop">
+      <freejoint name="cube_red_free"/>
+      <geom name="cube_red" type="box" size="0.012 0.012 0.012" rgba="0.9 0.2 0.2 1" mass="0.03"/>
+    </body>
+    <body name="cube_blue" pos="0.20 0.06 0.087" childclass="prop">
+      <freejoint name="cube_blue_free"/>
+      <geom name="cube_blue" type="box" size="0.012 0.012 0.012" rgba="0.2 0.35 0.9 1" mass="0.03"/>
+    </body>
+  </worldbody>
+</mujoco>
