@@ -33,14 +33,15 @@ BASE = "lerobot/smolvla_base"
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--repo-id", default="local/so101_reach")
-    ap.add_argument("--root", default=str(DATASETS_ROOT / "so101_reach"))
-    ap.add_argument("--output", default=str(CHECKPOINTS_ROOT / "smolvla_reach"))
+    ap.add_argument("--repo-id", default="local/so101_pickplace")
+    ap.add_argument("--root", default=str(DATASETS_ROOT / "so101_pickplace"))
+    ap.add_argument("--output", default=str(CHECKPOINTS_ROOT / "smolvla_pickplace"))
     ap.add_argument("--steps", type=int, default=2000)
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--log-every", type=int, default=25)
     ap.add_argument("--save-every", type=int, default=500)
+    ap.add_argument("--num-workers", type=int, default=0, help="dataloader workers (use 8-16 on a GPU box)")
     ap.add_argument("--device", default="mps")
     args = ap.parse_args()
 
@@ -80,7 +81,8 @@ def main():
     )
 
     dl = DataLoader(ds, batch_size=args.batch_size, shuffle=True,
-                    num_workers=0, pin_memory=False, drop_last=True)
+                    num_workers=args.num_workers, pin_memory=(device.type == "cuda"),
+                    persistent_workers=(args.num_workers > 0), drop_last=True)
     opt = torch.optim.AdamW(policy.parameters(), lr=args.lr)
 
     policy.train()
