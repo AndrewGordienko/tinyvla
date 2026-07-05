@@ -28,16 +28,19 @@ EP_LEN = 220                 # max steps per episode (variable-length; 2-step so
 DWELL = 8                    # extra frames recorded after the command succeeds
 EXPERT = dict(gain=0.25, max_dq=0.03)   # natural pace: ~70-140 frame episodes, full chunk coverage
 
+CAMERAS = ["front", "wrist"]     # fixed overview + gripper-mounted close-up
+
 FEATURES = {
     "observation.state": {"dtype": "float32", "shape": (6,), "names": JOINT_NAMES},
-    "observation.images.front": {"dtype": "video", "shape": (IMG, IMG, 3),
-                                 "names": ["height", "width", "channels"]},
     "action": {"dtype": "float32", "shape": (6,), "names": JOINT_NAMES},
+    **{f"observation.images.{cam}": {"dtype": "video", "shape": (IMG, IMG, 3),
+                                     "names": ["height", "width", "channels"]}
+       for cam in CAMERAS},
 }
 
 
-def render_square(env, renderer):
-    renderer.update_scene(env.data, camera="front")
+def render_cam(env, renderer, cam):
+    renderer.update_scene(env.data, camera=cam)
     return renderer.render()
 
 
@@ -70,11 +73,11 @@ def main():
         dwell = 0
         for t in range(EP_LEN):
             state = env.data.qpos[:6].copy().astype(np.float32)
-            image = render_square(env, renderer)
+            images = {f"observation.images.{cam}": render_cam(env, renderer, cam) for cam in CAMERAS}
             action = env.expert_action(**EXPERT).astype(np.float32)
             ds.add_frame({
                 "observation.state": state,
-                "observation.images.front": image,
+                **images,
                 "action": action,
                 "task": env.instruction,             # one of the 8 supported commands
             })

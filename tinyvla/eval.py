@@ -20,22 +20,23 @@ from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 
 from .task import SO101PickPlaceTask, COMMANDS
-from .collect import IMG
+from .collect import IMG, CAMERAS
 from .paths import ARTIFACTS_ROOT, CHECKPOINTS_ROOT, DATASETS_ROOT
 
 BASE = "lerobot/smolvla_base"
 
 
 def build_obs(env, renderer, device):
-    renderer.update_scene(env.data, camera="front")
-    img = renderer.render()                                        # (H,W,3) uint8
-    img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0   # (3,H,W) [0,1]
     state = torch.from_numpy(env.data.qpos[:6].copy().astype(np.float32))
-    return {
+    obs = {
         "observation.state": state.unsqueeze(0).to(device),
-        "observation.images.front": img.unsqueeze(0).to(device),
         "task": [env.instruction],                                 # varies per command
     }
+    for cam in CAMERAS:
+        renderer.update_scene(env.data, camera=cam)
+        img = torch.from_numpy(renderer.render()).permute(2, 0, 1).float() / 255.0
+        obs[f"observation.images.{cam}"] = img.unsqueeze(0).to(device)
+    return obs
 
 
 def main():
