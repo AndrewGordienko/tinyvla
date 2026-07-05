@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from contextlib import nullcontext
 
 import torch
 from torch.utils.data import DataLoader
@@ -91,11 +92,16 @@ def main():
           f"{meta.total_episodes} eps, {meta.total_frames} frames | "
           f"chunk={cfg.chunk_size}, batch={args.batch_size}, steps={args.steps}")
 
+    # bf16 autocast on CUDA (big speedup on H100; no GradScaler needed for bf16)
+    amp = (torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+           if device.type == "cuda" else nullcontext())
+
     t0 = time.time()
     running = 0.0
     for step, batch in zip(range(1, args.steps + 1), cycle(dl)):
         batch = preprocessor(batch)
-        loss, _ = policy.forward(batch)
+        with amp:
+            loss, _ = policy.forward(batch)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(policy.parameters(), 10.0)
         opt.step()
