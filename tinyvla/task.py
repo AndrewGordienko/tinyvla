@@ -71,6 +71,9 @@ EE_LOCAL = np.array([0.0045, 0.0001, -0.0382])          # fingertip / grasp cent
 
 GRIP_OPEN = 1.2
 GRIP_CLOSED = -0.17
+GRASP_RADIUS = 0.04     # cube attaches if within this of the fingertip when closing
+GRIP_GRAB = 0.6         # gripper joint below this counts as "closing to grab"
+GRIP_RELEASE = 0.7      # gripper joint above this releases
 
 CUBE_X = (0.18, 0.24)
 CUBE_Y = (-0.085, 0.085)
@@ -233,11 +236,29 @@ class SO101PickPlaceTask:
         self.data.qpos[a + 3:a + 7] = q
         self.data.qvel[self.cube_dofadr[c]:self.cube_dofadr[c] + 6] = 0
 
+    def _update_grasp(self):
+        """Physics-triggered grasp: attach the nearest cube when the gripper closes
+        near it, release when the gripper opens. Works for ANY controller (the
+        scripted expert AND a learned policy) — the grasp is not scripted."""
+        grip = self.data.qpos[5]                      # gripper joint angle
+        if self.grasped is None:
+            if grip < GRIP_GRAB:                      # gripper is closing
+                ee, best, bd = self.ee_pos(), None, GRASP_RADIUS
+                for c in COLORS:
+                    d = np.linalg.norm(self.cube_pos(c) - ee)
+                    if d < bd:
+                        bd, best = d, c
+                if best is not None:
+                    self._grasp(best)
+        elif grip > GRIP_RELEASE:                     # gripper opened -> let go
+            self.grasped = None
+
     def step(self, action):
         action = np.clip(action, self.ctrl_range[:, 0], self.ctrl_range[:, 1])
         self.data.ctrl[:] = action
         for _ in range(self.n_substeps):
             mujoco.mj_step(self.model, self.data)
+            self._update_grasp()
             if self.grasped is not None:
                 self._carry(); mujoco.mj_forward(self.model, self.data)
         return self.observation()
@@ -286,13 +307,10 @@ class SO101PickPlaceTask:
             act = self._ik_action(at_cube, GRIP_OPEN, **kw)
             if near(ee, at_cube, 0.015):
                 self.phase, self.phase_t = 2, 0
-        elif p == 2:
+        elif p == 2:                                 # close gripper; grasp fires in step()
             act = self._ik_action(at_cube, GRIP_CLOSED, **kw)
-            if self.phase_t >= 5:
-                if self.grasped is None:
-                    self._grasp(color)
-                if self.phase_t >= 8:
-                    self.phase, self.phase_t = 3, 0
+            if (self.grasped is not None and self.phase_t >= 3) or self.phase_t >= 20:
+                self.phase, self.phase_t = 3, 0
         elif p == 3:
             act = self._ik_action(above_cube, GRIP_CLOSED, **kw)
             if ee[2] > SAFE_Z - 0.02:
@@ -305,11 +323,9 @@ class SO101PickPlaceTask:
             act = self._ik_action(drop, GRIP_CLOSED, **kw)
             if near(ee, drop, 0.02):
                 self.phase, self.phase_t = 6, 0
-        else:  # release, settle, then advance to the next step (if any)
+        else:  # open gripper (release fires in step()), settle, then next step
             act = self._ik_action(drop, GRIP_OPEN, **kw)
-            if self.grasped is not None and self.phase_t >= 3:
-                self.grasped = None
-            if self.phase_t >= 8 and self.step_idx < len(self.steps) - 1:
+            if self.phase_t >= 10 and self.step_idx < len(self.steps) - 1:
                 self.step_idx += 1
                 self.phase, self.phase_t = 0, 0
         return act
