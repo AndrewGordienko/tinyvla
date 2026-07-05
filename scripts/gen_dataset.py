@@ -30,8 +30,7 @@ def main():
 
     os.makedirs(args.shard_dir, exist_ok=True)
     roots, repo_ids, procs, logs = [], [], [], []
-    env = os.environ.copy()
-    env.setdefault("MUJOCO_GL", "egl")
+    env = os.environ.copy()   # inherit MUJOCO_GL (set =egl on Linux GPU boxes)
 
     print(f"launching {args.shards} shards x {args.eps_per_shard} eps "
           f"= {args.shards * args.eps_per_shard} episodes", flush=True)
