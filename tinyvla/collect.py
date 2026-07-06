@@ -28,7 +28,7 @@ EP_LEN = 220                 # max steps per episode (variable-length; 2-step so
 DWELL = 8                    # extra frames recorded after the command succeeds
 EXPERT = dict(gain=0.25, max_dq=0.03)   # natural pace: ~70-140 frame episodes, full chunk coverage
 
-CAMERAS = ["front", "wrist"]     # fixed overview + gripper-mounted close-up
+CAMERAS = ["front"]              # front-only (wrist cam removed: it hurt closed-loop)
 
 FEATURES = {
     "observation.state": {"dtype": "float32", "shape": (6,), "names": JOINT_NAMES},
