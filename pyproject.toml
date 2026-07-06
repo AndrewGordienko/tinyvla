@@ -25,6 +25,7 @@ lerobot = [
 
 [project.scripts]
 tinyvla-benchmark = "tinyvla.benchmark:main"
+tinyvla-audit = "tinyvla.audit:main"
 tinyvla-collect = "tinyvla.collect:main"
 tinyvla-dashboard = "tinyvla.dashboard:main"
 tinyvla-dataset-viewer = "tinyvla.dataset_viewer:main"

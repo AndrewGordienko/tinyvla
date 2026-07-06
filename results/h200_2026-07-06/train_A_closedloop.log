@@ -1,0 +1,7 @@
+  step  1000/6000  closed-loop success 1/6 (17%)  min_dist 0.040  final_dist 0.117
+  step  2000/6000  closed-loop success 1/6 (17%)  min_dist 0.035  final_dist 0.120
+  step  3000/6000  closed-loop success 1/6 (17%)  min_dist 0.030  final_dist 0.103
+  step  4000/6000  closed-loop success 2/6 (33%)  min_dist 0.033  final_dist 0.123
+  step  5000/6000  closed-loop success 1/6 (17%)  min_dist 0.032  final_dist 0.100
+  step  6000/6000  closed-loop success 1/6 (17%)  min_dist 0.030  final_dist 0.123
+done in 29.4 min -> /root/tinyvla/data/ckpt_A

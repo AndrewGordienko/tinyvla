@@ -330,6 +330,54 @@ class SO101PickPlaceTask:
                 self.phase, self.phase_t = 0, 0
         return act
 
+    # -- stateless reactive expert (for DAgger relabelling) ---------------
+    def reactive_action(self, gain=0.25, max_dq=0.03):
+        """Geometric expert with NO phase/step memory: it derives the correct
+        sub-goal purely from the CURRENT scene (cube + end-effector positions and
+        grasp state). Unlike expert_action (a stateful state-machine), this can
+        label an arbitrary state the learned policy has drifted into, which is
+        what DAgger needs. Progress across multi-step commands is inferred from
+        which cubes are already at their destination.
+        """
+        def _hold(grip):
+            act = self.data.qpos[:6].copy()
+            act[5] = grip
+            return np.clip(act, self.ctrl_range[:, 0], self.ctrl_range[:, 1])
+
+        incomplete = [(c, d) for c, d in self.steps if not self._at_dest(c, d)]
+        if not incomplete:                      # task complete -> hold, gripper open
+            return _hold(GRIP_OPEN)
+        color, dest = incomplete[0]
+
+        if self.grasped is not None and self.grasped != color:
+            return _hold(GRIP_OPEN)             # holding the wrong cube -> release
+
+        cube = self.cube_pos(color)
+        above_cube = np.array([cube[0], cube[1], SAFE_Z])
+        dxy = self._dest_xy(dest, color)
+        above_dest = np.array([dxy[0], dxy[1], SAFE_Z])
+        drop = np.array([dxy[0], dxy[1], self._drop_z(dest, color)])
+        ee = self.ee_pos()
+        kw = dict(gain=gain, max_dq=max_dq)
+
+        if self.grasped == color:               # carrying target cube -> deliver
+            # Travel straight toward the destination: targeting above_dest raises z
+            # AND moves xy together, so we never get stuck trying to lift in place at
+            # a location the arm can't reach SAFE_Z (a real reachability limit here).
+            over_tol = 0.012 if dest == "stack" else 0.025   # stacking needs tight xy
+            if np.linalg.norm(ee[:2] - above_dest[:2]) > over_tol:
+                return self._ik_action(above_dest, GRIP_CLOSED, **kw)   # travel toward dest
+            if ee[2] > drop[2] + 0.02:
+                return self._ik_action(drop, GRIP_CLOSED, **kw)         # descend over dest
+            return self._ik_action(drop, GRIP_OPEN, **kw)               # release
+
+        # not holding it yet -> approach and grasp
+        if np.linalg.norm(ee[:2] - cube[:2]) > 0.02:
+            return self._ik_action(above_cube, GRIP_OPEN, **kw)         # get over the cube
+        if ee[2] > cube[2] + 0.03:
+            return self._ik_action(cube, GRIP_OPEN, **kw)               # descend to cube
+        return self._ik_action(cube, GRIP_CLOSED, **kw)                 # close to grab
+
 
 # backward-compatible alias
 SO101ReachTask = SO101PickPlaceTask

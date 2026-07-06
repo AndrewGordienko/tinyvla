@@ -1,0 +1,44 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>tinyvla — ckpt_B rollouts</title>
+<style>
+ body{font-family:-apple-system,system-ui,sans-serif;background:#0f1115;color:#e6e6e6;margin:0;padding:24px}
+ h1{font-size:20px;margin:0 0 4px}
+ .sub{color:#9aa0aa;font-size:13px;margin-bottom:20px;max-width:820px;line-height:1.5}
+ .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:18px}
+ .card{background:#171a21;border:1px solid #232833;border-radius:10px;padding:10px}
+ .card img{width:100%;border-radius:6px;display:block;background:#000}
+ .cap{font-size:13px;margin-top:8px;color:#cdd2da}
+ .miss{color:#e0774f;font-weight:600}
+ .ok{color:#5fbf7f;font-weight:600}
+ code{background:#232833;padding:1px 5px;border-radius:4px;font-size:12px}
+</style></head><body>
+ <h1>tinyvla — SmolVLA rollouts (Step B checkpoint, <code>n_action_steps=10</code>)</h1>
+ <div class="sub">
+  H200-trained checkpoint (frozen expert-only, 120 sim episodes, 6000 steps). On the training box (CUDA)
+  this checkpoint scored <b>3/6 (50%)</b> closed-loop. These clips are re-rendered locally on <b>MPS</b>,
+  whose different numerics flip this <i>marginal</i> policy toward misses — so they under-represent it.
+  What they honestly show: the arm reads the instruction and drives to the correct cube (min-dist ~0.03),
+  then fails the precise grasp/place — the compounding-error story, visualized.
+ </div>
+ <div class="grid" id="grid"></div>
+ <script>
+  const cmds = [
+   ["cmd0","Pick up the red cube and place it in the box."],
+   ["cmd1","Pick up the blue cube and place it in the box."],
+   ["cmd2","Put the red cube on the plate."],
+   ["cmd3","Put the blue cube on the plate."],
+   ["cmd6","Put the red cube in the box and the blue cube on the plate."],
+   ["cmd7","Put the blue cube in the box and the red cube on the plate."],
+  ];
+  const grid=document.getElementById('grid');
+  for(const [id,label] of cmds){
+   const g=(id+"_success.gif"), m=(id+"_miss.gif");
+   const card=document.createElement('div');card.className='card';
+   const img=document.createElement('img');
+   img.src=g; img.onerror=()=>{img.onerror=null;img.src=m;};
+   const cap=document.createElement('div');cap.className='cap';
+   cap.innerHTML='"'+label+'"';
+   card.appendChild(img);card.appendChild(cap);grid.appendChild(card);
+  }
+ </script>
+</body></html>

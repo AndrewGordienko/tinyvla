@@ -34,6 +34,7 @@ from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 from lerobot.utils.constants import ACTION, OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
 
 from tinyvla.benchmark import load_policy
+from tinyvla.eval_closedloop import evaluate_closed_loop, format_metrics
 
 
 @contextlib.contextmanager
@@ -176,12 +177,15 @@ def copy_pruning_sidecars(source: Path, output: Path) -> None:
             shutil.copy2(src, output / name)
 
 
-def save_checkpoint(policy, preprocessor, postprocessor, source: Path, output: Path) -> None:
+def save_checkpoint(policy, preprocessor, postprocessor, source: Path, output: Path,
+                    delta_actions: bool = False) -> None:
     output.mkdir(parents=True, exist_ok=True)
     policy.save_pretrained(output)
     preprocessor.save_pretrained(output)
     postprocessor.save_pretrained(output)
     copy_pruning_sidecars(source, output)
+    if delta_actions:
+        (output / "delta_actions.json").write_text('{"delta_actions": true}\n')
 
 
 def main() -> None:
@@ -209,7 +213,23 @@ def main() -> None:
     parser.add_argument("--log-every", type=int, default=5)
     parser.add_argument("--save-every", type=int, default=0)
     parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--closed-loop-every", type=int, default=0,
+                        help="Run a closed-loop rollout eval every N steps (0=off). "
+                             "Judge/select checkpoints by this, not offline loss.")
+    parser.add_argument("--closed-loop-commands", default="0,1,2,3",
+                        help="Comma-separated COMMANDS indices to roll out.")
+    parser.add_argument("--closed-loop-cap", type=int, default=180)
+    parser.add_argument("--closed-loop-seed", type=int, default=100)
+    parser.add_argument("--save-best-closed-loop", action="store_true",
+                        help="Keep the checkpoint with the best closed-loop success in <output>/best_closed_loop.")
+    parser.add_argument("--n-action-steps", type=int, default=None,
+                        help="Actions executed per replan (<=chunk_size). Try 10 for tighter closed-loop "
+                             "(base default 50 causes open-loop drift).")
+    parser.add_argument("--delta-actions", action="store_true",
+                        help="Dataset stores joint deltas (action-state); closed-loop eval adds the live "
+                             "pose back. Set this to match a delta-actions dataset.")
     args = parser.parse_args()
+    cl_commands = [int(x) for x in args.closed_loop_commands.split(",") if x != ""]
     objective = args.objective or ("teacher_action" if args.teacher else "expert")
     if (objective.startswith("teacher") or objective.startswith("mixed")) and not args.teacher:
         raise SystemExit(f"--objective {objective} requires --teacher")
@@ -224,6 +244,8 @@ def main() -> None:
     dataset = LeRobotDataset(args.repo_id, root=args.root, delta_timestamps=delta_timestamps)
 
     student = load_policy(student_path, args.device, meta).to(device)
+    if args.n_action_steps is not None:
+        student.config.n_action_steps = args.n_action_steps
     student_preprocessor, student_postprocessor = make_processors(student, student_path, device, meta)
     trainable_params = set_trainable(student, args.trainable)
 
@@ -254,6 +276,8 @@ def main() -> None:
     output.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     losses: list[float] = []
+    cl_history: list[dict] = []
+    best_cl = -1.0
     student.train()
     for step, raw_batch in zip(range(1, args.steps + 1), cycle(loader)):
         batch = student_preprocessor(dict(raw_batch))
@@ -290,7 +314,8 @@ def main() -> None:
             print(f"  step {step:5d}/{args.steps}  loss {sum(recent)/len(recent):.5f}", flush=True)
 
         if args.save_every and step % args.save_every == 0:
-            save_checkpoint(student, student_preprocessor, student_postprocessor, student_path, output)
+            save_checkpoint(student, student_preprocessor, student_postprocessor, student_path, output,
+                            delta_actions=args.delta_actions)
             if args.save_step_subdirs:
                 save_checkpoint(
                     student,
@@ -298,9 +323,28 @@ def main() -> None:
                     student_postprocessor,
                     student_path,
                     output / f"step_{args.step_offset + step:06d}",
+                    delta_actions=args.delta_actions,
                 )
 
-    save_checkpoint(student, student_preprocessor, student_postprocessor, student_path, output)
+        if args.closed_loop_every and (step % args.closed_loop_every == 0 or step == args.steps):
+            cl = evaluate_closed_loop(
+                student, student_preprocessor, student_postprocessor,
+                device=device, commands=cl_commands,
+                cap=args.closed_loop_cap, seed=args.closed_loop_seed,
+                delta_actions=args.delta_actions,
+            )
+            print(f"  step {step:5d}/{args.steps}  closed-loop {format_metrics(cl)}", flush=True)
+            cl_history.append({"step": args.step_offset + step, **cl})
+            if args.save_best_closed_loop and cl["success_rate"] > best_cl:
+                best_cl = cl["success_rate"]
+                save_checkpoint(student, student_preprocessor, student_postprocessor,
+                                student_path, output / "best_closed_loop",
+                                delta_actions=args.delta_actions)
+                print(f"    new best closed-loop success {cl['success_rate']:.0%} "
+                      f"-> saved {output / 'best_closed_loop'}", flush=True)
+
+    save_checkpoint(student, student_preprocessor, student_postprocessor, student_path, output,
+                    delta_actions=args.delta_actions)
 
     meta_out = {
         "student": str(student_path),
@@ -320,6 +364,8 @@ def main() -> None:
         "loss_first": losses[0] if losses else None,
         "loss_last": losses[-1] if losses else None,
         "loss_mean": sum(losses) / len(losses) if losses else None,
+        "closed_loop_history": cl_history,
+        "closed_loop_best_success": max((c["success_rate"] for c in cl_history), default=None),
         "seconds": time.time() - t0,
     }
     (output / "recovery_meta.json").write_text(json.dumps(meta_out, indent=2) + "\n")
