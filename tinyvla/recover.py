@@ -176,6 +176,14 @@ def copy_pruning_sidecars(source: Path, output: Path) -> None:
             shutil.copy2(src, output / name)
 
 
+def save_checkpoint(policy, preprocessor, postprocessor, source: Path, output: Path) -> None:
+    output.mkdir(parents=True, exist_ok=True)
+    policy.save_pretrained(output)
+    preprocessor.save_pretrained(output)
+    postprocessor.save_pretrained(output)
+    copy_pruning_sidecars(source, output)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--student", required=True)
@@ -189,17 +197,21 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument(
         "--objective",
-        choices=["expert", "teacher_action", "teacher_velocity"],
+        choices=["expert", "teacher_action", "teacher_velocity", "mixed_action_expert"],
         default=None,
         help="Defaults to teacher_action when --teacher is set, otherwise expert.",
     )
+    parser.add_argument("--teacher-loss-weight", type=float, default=1.0)
+    parser.add_argument("--expert-loss-weight", type=float, default=0.25)
+    parser.add_argument("--save-step-subdirs", action="store_true")
+    parser.add_argument("--step-offset", type=int, default=0)
     parser.add_argument("--trainable", choices=["expert", "all"], default="expert")
     parser.add_argument("--log-every", type=int, default=5)
     parser.add_argument("--save-every", type=int, default=0)
     parser.add_argument("--seed", type=int, default=1234)
     args = parser.parse_args()
     objective = args.objective or ("teacher_action" if args.teacher else "expert")
-    if objective.startswith("teacher") and not args.teacher:
+    if (objective.startswith("teacher") or objective.startswith("mixed")) and not args.teacher:
         raise SystemExit(f"--objective {objective} requires --teacher")
     if args.device == "mps" and not torch.backends.mps.is_available():
         raise SystemExit("MPS requested, but torch.backends.mps.is_available() is false in this Python environment")
@@ -245,7 +257,11 @@ def main() -> None:
     student.train()
     for step, raw_batch in zip(range(1, args.steps + 1), cycle(loader)):
         batch = student_preprocessor(dict(raw_batch))
-        if objective == "teacher_action" and teacher is not None and teacher_preprocessor is not None:
+        expert_batch = None
+        if objective == "mixed_action_expert":
+            expert_batch = dict(batch)
+
+        if objective in {"teacher_action", "mixed_action_expert"} and teacher is not None and teacher_preprocessor is not None:
             with torch.inference_mode():
                 teacher_batch = teacher_preprocessor(dict(raw_batch))
                 noise = fixed_noise(teacher, teacher_batch, args.seed + step)
@@ -257,6 +273,10 @@ def main() -> None:
         if objective == "teacher_velocity" and teacher is not None and teacher_preprocessor is not None:
             teacher_batch = teacher_preprocessor(dict(raw_batch))
             loss = teacher_velocity_loss(student, batch, teacher, teacher_batch, args.seed + step)
+        elif objective == "mixed_action_expert" and expert_batch is not None:
+            teacher_loss, _ = student.forward(batch)
+            expert_loss, _ = student.forward(expert_batch)
+            loss = args.teacher_loss_weight * teacher_loss + args.expert_loss_weight * expert_loss
         else:
             loss, _ = student.forward(batch)
         loss.backward()
@@ -270,15 +290,17 @@ def main() -> None:
             print(f"  step {step:5d}/{args.steps}  loss {sum(recent)/len(recent):.5f}", flush=True)
 
         if args.save_every and step % args.save_every == 0:
-            student.save_pretrained(output)
-            student_preprocessor.save_pretrained(output)
-            student_postprocessor.save_pretrained(output)
-            copy_pruning_sidecars(student_path, output)
+            save_checkpoint(student, student_preprocessor, student_postprocessor, student_path, output)
+            if args.save_step_subdirs:
+                save_checkpoint(
+                    student,
+                    student_preprocessor,
+                    student_postprocessor,
+                    student_path,
+                    output / f"step_{args.step_offset + step:06d}",
+                )
 
-    student.save_pretrained(output)
-    student_preprocessor.save_pretrained(output)
-    student_postprocessor.save_pretrained(output)
-    copy_pruning_sidecars(student_path, output)
+    save_checkpoint(student, student_preprocessor, student_postprocessor, student_path, output)
 
     meta_out = {
         "student": str(student_path),
@@ -287,9 +309,12 @@ def main() -> None:
         "root": args.root,
         "device": args.device,
         "steps": args.steps,
+        "step_offset": args.step_offset,
         "batch_size": args.batch_size,
         "lr": args.lr,
         "objective": objective,
+        "teacher_loss_weight": args.teacher_loss_weight,
+        "expert_loss_weight": args.expert_loss_weight,
         "trainable": args.trainable,
         "trainable_params": trainable_params,
         "loss_first": losses[0] if losses else None,
