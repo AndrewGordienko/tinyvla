@@ -1,6 +1,6 @@
 # H200 Step B runbook
 
-Last updated: 2026-07-09 17:15 UTC.
+Last updated: 2026-07-09 19:16 UTC.
 
 This note captures the live H200 run state and the reasoning around it so the
 repo can be pushed/pulled to another machine without losing the thread.
@@ -52,7 +52,7 @@ The main log is:
 /root/tinyvla/logs/h200_step_b_20260709_165235.log
 ```
 
-The Step B script does three things:
+The Step B script was intended to do three things:
 
 1. Generate two 400-episode image datasets concurrently:
    - `data/datasets/pickplace_abs_400`
@@ -64,7 +64,25 @@ As of the timestamp above:
 
 - Dataset generation completed successfully for both abs and delta.
 - Shards were merged and removed to free disk.
-- B1 training is running:
+- B1 training was interrupted after step 17775/20000 when the Vast instance
+  relaunched/rebooted. There was no Python traceback, OOM, or no-space error in
+  the logs. The box uptime after reconnect was only about 36 minutes, so treat
+  this as an instance interruption rather than a model/training failure.
+- B1 was far enough along to be useful for comparison. The best B1 closed-loop
+  score observed was `10/18` (`56%`), first reached at step 4000 and matched at
+  steps 12000 and 14000. The saved best checkpoint is:
+
+```bash
+data/checkpoints/b1_nas10_abs/best_closed_loop
+```
+
+- The latest regular B1 checkpoint saved before the interruption was step 16000:
+
+```bash
+data/checkpoints/b1_nas10_abs
+```
+
+- B1 was launched with:
 
 ```bash
 python -m tinyvla.train \
@@ -99,9 +117,35 @@ new best closed-loop success 39% -> saved data/checkpoints/b1_nas10_abs/best_clo
 step 2000/20000 closed-loop success 6/18 (33%) min_dist 0.034 final_dist 0.084
 ```
 
-- The step 1000 checkpoint remains the current best B1 closed-loop checkpoint.
-- GPU utilization has been active during training, around 80-90% after warmup.
-- Disk had about `7.7G` free after the step 2000 checkpoint/eval.
+- This later improved; current best B1 is `56%`, saved in
+  `data/checkpoints/b1_nas10_abs/best_closed_loop`.
+- B2 has been manually restarted in a detached process because the original
+  Step B wrapper died with the instance interruption:
+
+```bash
+nohup env PATH=/root/tinyvla/.venv/bin:$PATH MUJOCO_GL=egl \
+  python -m tinyvla.train \
+    --repo-id local/pickplace_delta_400 \
+    --root data/datasets/pickplace_delta_400 \
+    --steps 20000 \
+    --batch-size 64 \
+    --num-workers 16 \
+    --device cuda \
+    --n-action-steps 10 \
+    --delta-actions \
+    --save-every 2000 \
+    --output data/checkpoints/b2_nas10_delta \
+    --closed-loop-every 1000 \
+    --closed-loop-commands 0,1,2,3,6,7 \
+    --closed-loop-cap 220 \
+    --closed-loop-episodes 3 \
+    --save-best-closed-loop \
+  > data/checkpoints/b2_nas10_delta.log 2>&1 < /dev/null &
+```
+
+- B2 is running as PID `979` as of this update. Early B2 startup is healthy:
+  `150/20000` steps, loss down from `0.1852` to `0.0826`, GPU around `94%`.
+- Disk had about `7.0G` free after B2 startup.
 
 ## How to check health
 
@@ -159,10 +203,10 @@ The immediate levers under test are:
 - Closed-loop success every 1000 steps, because offline loss/MAE can look good
   while rollout still fails.
 
-The first B1 closed-loop result (`39%`) is a good sign that the pipeline is not
-broken: data loading, policy training, MuJoCo rollout, success scoring, and
-best-checkpoint saving all worked. It is not yet proof that the final model is
-good enough. We need the full B1 curve and the B2 delta-action comparison.
+The B1 closed-loop curve is a good sign that the pipeline is not broken: data
+loading, policy training, MuJoCo rollout, success scoring, and best-checkpoint
+saving all worked. B1 peaked at `56%` before the instance interruption. We still
+need the B2 delta-action curve to decide whether deltas beat absolute actions.
 
 ## Next decisions after Step B finishes
 
