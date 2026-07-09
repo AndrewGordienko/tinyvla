@@ -43,12 +43,22 @@ def evaluate_closed_loop(
     camera: str = "front",
     img: int = IMG,
     delta_actions: bool = False,
+    episodes: int = 1,
+    stop_on_success: bool = True,
+    dwell: int = 8,
 ) -> dict:
     """Roll out `policy` on each command and return graded closed-loop metrics.
 
     If ``delta_actions`` is set, the model predicts joint deltas relative to the
     current pose; we add the live ``qpos[:6]`` back to recover absolute targets
     before stepping the sim (mirror of the delta transform applied to the data).
+
+    ``episodes`` rolls out each command that many times under different (but
+    deterministic) scene draws — success over len(commands)*episodes rollouts.
+    A single 6-command sweep quantizes to 17% steps, too coarse to compare runs;
+    use episodes>=3 whenever two numbers will be compared. The env RNG is
+    reseeded per rollout from (seed, command, episode), so every checkpoint and
+    every run sees the exact same scenes.
 
     Restores the policy's train/eval mode on exit so it is safe to call between
     optimizer steps.
@@ -59,28 +69,37 @@ def evaluate_closed_loop(
     renderer = mujoco.Renderer(env.model, height=img, width=img)
     successes, min_dists, final_dists = [], [], []
     try:
-        for i, ci in enumerate(commands):
-            env.reset(command=ci)
-            policy.reset()
-            torch.manual_seed(seed + i)
-            dmin = float("inf")
-            for _ in range(cap):
-                obs = preprocessor(build_obs(env, renderer, COMMANDS[ci]["instruction"], device, camera))
-                with torch.inference_mode():
-                    action = policy.select_action(obs)
-                action = postprocessor(action).squeeze(0).cpu().numpy()
-                if delta_actions:
-                    action = action + env.data.qpos[:6].astype(action.dtype)
-                env.step(action)
-                dmin = min(dmin, float(np.linalg.norm(env.ee_pos() - env.cube_pos())))
-            successes.append(int(env.success()))
-            min_dists.append(dmin)
-            final_dists.append(float(np.linalg.norm(env.ee_pos() - env.cube_pos())))
+        for ci in commands:
+            for ep in range(episodes):
+                rollout_seed = seed + 1009 * ep + ci
+                env.rng = np.random.default_rng(rollout_seed)
+                env.reset(command=ci)
+                policy.reset()
+                torch.manual_seed(rollout_seed)
+                dmin = float("inf")
+                hold = 0
+                for _ in range(cap):
+                    obs = preprocessor(build_obs(env, renderer, COMMANDS[ci]["instruction"], device, camera))
+                    with torch.inference_mode():
+                        action = policy.select_action(obs)
+                    action = postprocessor(action).squeeze(0).cpu().numpy()
+                    if delta_actions:
+                        action = action + env.data.qpos[:6].astype(action.dtype)
+                    env.step(action)
+                    dmin = min(dmin, float(np.linalg.norm(env.ee_pos() - env.cube_pos())))
+                    # end early once success is SUSTAINED (same dwell rule as the
+                    # data collector) — no need to burn the rest of `cap`
+                    hold = hold + 1 if env.success() else 0
+                    if stop_on_success and hold >= dwell:
+                        break
+                successes.append(int(env.success()))
+                min_dists.append(dmin)
+                final_dists.append(float(np.linalg.norm(env.ee_pos() - env.cube_pos())))
     finally:
         renderer.close()
         if was_training:
             policy.train()
-    n = len(commands)
+    n = len(commands) * episodes
     return {
         "n": n,
         "successes": int(np.sum(successes)),
@@ -93,7 +112,7 @@ def evaluate_closed_loop(
 def evaluate_per_command(policy, preprocessor, postprocessor, *, device,
                          commands=DEFAULT_COMMANDS, cap: int = 180, seed: int = 100,
                          camera: str = "front", img: int = IMG,
-                         delta_actions: bool = False) -> dict:
+                         delta_actions: bool = False, episodes: int = 1) -> dict:
     """Per-command closed-loop metrics -> {command_index: metrics}. Used by the
     curriculum to find which commands the policy is worst at."""
     out = {}
@@ -101,6 +120,7 @@ def evaluate_per_command(policy, preprocessor, postprocessor, *, device,
         out[ci] = evaluate_closed_loop(
             policy, preprocessor, postprocessor, device=device, commands=[ci],
             cap=cap, seed=seed, camera=camera, img=img, delta_actions=delta_actions,
+            episodes=episodes,
         )
     return out
 

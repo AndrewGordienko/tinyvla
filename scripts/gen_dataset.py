@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import time
@@ -26,6 +27,12 @@ def main():
     ap.add_argument("--out-repo", default="local/so101_pickplace_v2")
     ap.add_argument("--out-root", default="data/datasets/so101_pickplace_v2")
     ap.add_argument("--shard-dir", default="data/datasets/_shards")
+    ap.add_argument("--delta-actions", action="store_true",
+                    help="Forwarded to tinyvla.collect: shards store joint deltas (action - state); "
+                         "a delta_actions.json marker is written on the aggregated dataset.")
+    ap.add_argument("--no-videos", action="store_true",
+                    help="Forwarded to tinyvla.collect: store image frames instead of video. "
+                         "Use for TRAINING datasets — random-access reads are much faster.")
     args = ap.parse_args()
 
     os.makedirs(args.shard_dir, exist_ok=True)
@@ -34,15 +41,19 @@ def main():
 
     print(f"launching {args.shards} shards x {args.eps_per_shard} eps "
           f"= {args.shards * args.eps_per_shard} episodes", flush=True)
+    repo_prefix = re.sub(r"[^A-Za-z0-9_.-]+", "_", args.out_repo).strip("_")
     for k in range(args.shards):
         root = os.path.join(args.shard_dir, f"shard_{k}")
-        repo = f"local/_shard_{k}"
+        repo = f"local/{repo_prefix}_shard_{k}"
         log = open(os.path.join(args.shard_dir, f"shard_{k}.log"), "w")
-        p = subprocess.Popen(
-            [sys.executable, "-m", "tinyvla.collect",
-             "--episodes", str(args.eps_per_shard), "--seed", str(1000 + k * 777),
-             "--root", root, "--repo-id", repo],
-            env=env, stdout=log, stderr=subprocess.STDOUT)
+        cmd = [sys.executable, "-m", "tinyvla.collect",
+               "--episodes", str(args.eps_per_shard), "--seed", str(1000 + k * 777),
+               "--root", root, "--repo-id", repo]
+        if args.delta_actions:
+            cmd.append("--delta-actions")
+        if args.no_videos:
+            cmd.append("--no-videos")
+        p = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
         procs.append(p); roots.append(root); repo_ids.append(repo); logs.append(log)
 
     # wait, reporting progress from the shard logs
@@ -71,6 +82,9 @@ def main():
     if os.path.exists(args.out_root):
         import shutil; shutil.rmtree(args.out_root)
     aggregate_datasets(repo_ids, args.out_repo, roots=roots, aggr_root=args.out_root)
+    if args.delta_actions:
+        with open(os.path.join(args.out_root, "delta_actions.json"), "w") as f:
+            f.write('{"delta_actions": true}\n')
     print(f"DONE -> {args.out_root}", flush=True)
 
 

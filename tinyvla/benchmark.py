@@ -34,6 +34,7 @@ from torch.utils.data import DataLoader
 
 # NOTE: import datasets before policies to avoid a circular import in lerobot 0.5.1
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+from .fast_dataset import FastChunkDataset
 from lerobot.policies.factory import dataset_to_policy_features, make_policy, make_pre_post_processors
 from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 from lerobot.policies.smolvla import smolvlm_with_expert as smolvlm_module
@@ -85,6 +86,26 @@ def is_pruned_checkpoint(path: Path) -> bool:
     return (path / "pruning_meta.json").exists() or (path / "vocab_remap.json").exists()
 
 
+def apply_saved_runtime_config(cfg: SmolVLAConfig, path: Path) -> SmolVLAConfig:
+    """Preserve runtime knobs saved in a checkpoint's config.json.
+
+    LeRobot's constructor accepts ``pretrained_path`` but starts from the config
+    class defaults for some rollout-critical values. In particular, a checkpoint
+    trained with ``n_action_steps=10`` can otherwise reload at the base default
+    of 50 and look much worse in closed loop.
+    """
+
+    config_path = path / "config.json"
+    if not config_path.exists():
+        return cfg
+    with config_path.open() as f:
+        data = json.load(f)
+    for key in ("n_action_steps",):
+        if key in data and data[key] is not None:
+            setattr(cfg, key, data[key])
+    return cfg
+
+
 def dataset_feature_overrides(meta: LeRobotDatasetMetadata) -> dict:
     features = dataset_to_policy_features(meta.features)
     output_features = {key: ft for key, ft in features.items() if ft.type.value == "ACTION"}
@@ -98,6 +119,7 @@ def load_policy(path: Path, device: str, meta: LeRobotDatasetMetadata):
         return load_pruned_smolvla(path, device=device, config_overrides=overrides)
 
     cfg = SmolVLAConfig(pretrained_path=path, device=device, **overrides)
+    apply_saved_runtime_config(cfg, path)
     with local_transformers_only():
         return make_policy(cfg=cfg, ds_meta=meta)
 
@@ -308,7 +330,7 @@ def main() -> None:
     device = torch.device(args.device)
     meta = LeRobotDatasetMetadata(args.repo_id, root=args.root)
     delta_timestamps = {"action": [i / meta.fps for i in range(SmolVLAConfig().chunk_size)]}
-    dataset = LeRobotDataset(args.repo_id, root=args.root, delta_timestamps=delta_timestamps)
+    dataset = FastChunkDataset(args.repo_id, root=args.root, delta_timestamps=delta_timestamps)
 
     results = {
         "dataset": {"repo_id": args.repo_id, "root": args.root, "frames": meta.total_frames},

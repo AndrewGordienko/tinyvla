@@ -118,6 +118,41 @@ def collect_expert_episodes(pool: Path, commands, n_per_command: int, *, seed: i
     return n
 
 
+def _collect_worker(job):
+    tmp, ci, n, seed, source, cap, dwell, gain, max_dq = job
+    return collect_expert_episodes(Path(tmp), [ci], n, seed=seed, source=source,
+                                   cap=cap, dwell=dwell, gain=gain, max_dq=max_dq)
+
+
+def collect_expert_episodes_parallel(pool: Path, commands, n_per_command: int, *,
+                                     workers: int = 0, seed: int = 100, source: str = "expert",
+                                     cap: int = 220, dwell: int = 8,
+                                     gain: float = 0.25, max_dq: float = 0.03) -> int:
+    """collect_expert_episodes, one process per command (sim+render are CPU-bound,
+    so this is a ~len(commands)x wall-clock win). Workers write to temp subdirs,
+    then episodes are renamed into the pool — no index races."""
+    commands = list(commands)
+    if workers <= 1 or len(commands) <= 1:
+        return collect_expert_episodes(pool, commands, n_per_command, seed=seed, source=source,
+                                       cap=cap, dwell=dwell, gain=gain, max_dq=max_dq)
+    import multiprocessing as mp
+    import tempfile
+    pool_dir = Path(pool)
+    pool_dir.mkdir(parents=True, exist_ok=True)
+    n = 0
+    with tempfile.TemporaryDirectory(dir=pool_dir) as tmp_root:
+        jobs = [(str(Path(tmp_root) / f"w{ci}"), ci, n_per_command, seed + 31 * ci,
+                 source, cap, dwell, gain, max_dq) for ci in commands]
+        ctx = mp.get_context("spawn")   # fork is unsafe with GL/MuJoCo state
+        with ctx.Pool(min(workers, len(commands))) as procs:
+            procs.map(_collect_worker, jobs)
+        for job in jobs:
+            for f in sorted(Path(job[0]).glob("ep_*.npz")):
+                f.rename(pool_dir / f"ep_{_next_index(pool_dir):06d}.npz")
+                n += 1
+    return n
+
+
 def dagger_collect(pool: Path, policy, preprocessor, postprocessor, commands, n_per_command: int,
                    *, device, cap: int = 200, seed: int = 500, delta_actions: bool = False,
                    gain: float = 0.25, max_dq: float = 0.03) -> int:
@@ -142,6 +177,7 @@ def dagger_collect(pool: Path, policy, preprocessor, postprocessor, commands, n_
                 policy.reset()
                 torch.manual_seed(seed + 1000 * ci + k)
                 states, actions, images = [], [], []
+                hold = 0
                 for _ in range(cap):
                     state = env.data.qpos[:6].copy().astype(np.float32)
                     image = _render(env, renderer)
@@ -155,6 +191,11 @@ def dagger_collect(pool: Path, policy, preprocessor, postprocessor, commands, n_
                     if delta_actions:
                         pa = pa + env.data.qpos[:6].astype(pa.dtype)
                     env.step(pa)
+                    # stop once the policy has SUCCEEDED and dwelled — post-success
+                    # frames teach nothing about recovering from drift
+                    hold = hold + 1 if env.success() else 0
+                    if hold >= 8:
+                        break
                 save_episode_to_pool(pool, states, actions, images,
                                      COMMANDS[ci]["instruction"], ci, "dagger")
                 n += 1
@@ -188,6 +229,7 @@ def build_lerobot_dataset(pool: Path, repo_id: str, root: Path, *,
     }
     ds = LeRobotDataset.create(repo_id=repo_id, fps=fps, features=features, root=root,
                                robot_type="so101", use_videos=False)
+    ds.start_image_writer(num_threads=8)   # PNG encodes off the main thread
     eps = pool_episodes(pool)
     if not eps:
         raise SystemExit(f"pool {pool} is empty")

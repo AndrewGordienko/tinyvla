@@ -26,6 +26,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+from tinyvla.fast_dataset import FastChunkDataset
 from lerobot.datasets.utils import cycle
 from lerobot.policies.factory import dataset_to_policy_features, make_pre_post_processors
 from lerobot.policies.smolvla.modeling_smolvla import make_att_2d_masks
@@ -35,6 +36,7 @@ from lerobot.utils.constants import ACTION, OBS_LANGUAGE_ATTENTION_MASK, OBS_LAN
 
 from tinyvla.benchmark import load_policy
 from tinyvla.eval_closedloop import evaluate_closed_loop, format_metrics
+from tinyvla.trainability import RECOVERY_TRAINABLE_MODES, set_trainable
 
 
 @contextlib.contextmanager
@@ -82,22 +84,6 @@ def make_processors(policy, model_path: Path, device: torch.device, meta: LeRobo
     )
 
 
-def set_trainable(policy, mode: str) -> int:
-    if mode == "all":
-        for param in policy.parameters():
-            param.requires_grad = True
-    elif mode == "expert":
-        for name, param in policy.named_parameters():
-            param.requires_grad = (
-                ".lm_expert." in name
-                or ".action_" in name
-                or ".state_proj" in name
-            )
-    else:
-        raise ValueError(f"unknown trainable mode: {mode}")
-    return sum(param.numel() for param in policy.parameters() if param.requires_grad)
-
-
 def fixed_noise(policy, batch: dict, seed: int) -> torch.Tensor:
     torch.manual_seed(seed)
     bsize = batch[ACTION].shape[0]
@@ -111,6 +97,15 @@ def fixed_noise(policy, batch: dict, seed: int) -> torch.Tensor:
 def fixed_time(batch: dict, seed: int) -> torch.Tensor:
     torch.manual_seed(seed)
     return torch.rand(batch[ACTION].shape[0], device=batch[ACTION].device)
+
+
+def compatible_noise(policy, batch: dict, noise: torch.Tensor | None) -> torch.Tensor | None:
+    if noise is None:
+        return None
+    expected = (batch[ACTION].shape[0], policy.config.chunk_size, policy.config.max_action_dim)
+    if tuple(noise.shape) != expected:
+        return None
+    return noise.to(device=batch[ACTION].device, dtype=batch[ACTION].dtype)
 
 
 def flow_velocity(policy, batch: dict, noise: torch.Tensor, time_tensor: torch.Tensor) -> torch.Tensor:
@@ -198,6 +193,7 @@ def main() -> None:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument(
         "--objective",
@@ -209,7 +205,7 @@ def main() -> None:
     parser.add_argument("--expert-loss-weight", type=float, default=0.25)
     parser.add_argument("--save-step-subdirs", action="store_true")
     parser.add_argument("--step-offset", type=int, default=0)
-    parser.add_argument("--trainable", choices=["expert", "all"], default="expert")
+    parser.add_argument("--trainable", choices=RECOVERY_TRAINABLE_MODES, default="expert")
     parser.add_argument("--log-every", type=int, default=5)
     parser.add_argument("--save-every", type=int, default=0)
     parser.add_argument("--seed", type=int, default=1234)
@@ -220,6 +216,8 @@ def main() -> None:
                         help="Comma-separated COMMANDS indices to roll out.")
     parser.add_argument("--closed-loop-cap", type=int, default=180)
     parser.add_argument("--closed-loop-seed", type=int, default=100)
+    parser.add_argument("--closed-loop-episodes", type=int, default=1,
+                        help="Rollouts per command per eval; use >=3 when comparing runs.")
     parser.add_argument("--save-best-closed-loop", action="store_true",
                         help="Keep the checkpoint with the best closed-loop success in <output>/best_closed_loop.")
     parser.add_argument("--n-action-steps", type=int, default=None,
@@ -241,7 +239,7 @@ def main() -> None:
     device = torch.device(args.device)
     meta = LeRobotDatasetMetadata(args.repo_id, root=args.root)
     delta_timestamps = {"action": [i / meta.fps for i in range(SmolVLAConfig().chunk_size)]}
-    dataset = LeRobotDataset(args.repo_id, root=args.root, delta_timestamps=delta_timestamps)
+    dataset = FastChunkDataset(args.repo_id, root=args.root, delta_timestamps=delta_timestamps)
 
     student = load_policy(student_path, args.device, meta).to(device)
     if args.n_action_steps is not None:
@@ -260,11 +258,15 @@ def main() -> None:
         dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=0,
-        pin_memory=False,
+        num_workers=args.num_workers,
+        pin_memory=(device.type == "cuda"),
+        persistent_workers=(args.num_workers > 0),
         drop_last=True,
     )
-    optimizer = torch.optim.AdamW((p for p in student.parameters() if p.requires_grad), lr=args.lr)
+    trainable_parameters = [p for p in student.parameters() if p.requires_grad]
+    if not trainable_parameters:
+        raise SystemExit(f"no trainable parameters for --trainable {args.trainable}")
+    optimizer = torch.optim.AdamW(trainable_parameters, lr=args.lr)
 
     print(
         f"recovering {student_path} -> {output} on {device} | "
@@ -282,6 +284,7 @@ def main() -> None:
     for step, raw_batch in zip(range(1, args.steps + 1), cycle(loader)):
         batch = student_preprocessor(dict(raw_batch))
         expert_batch = None
+        teacher_action_noise = None
         if objective == "mixed_action_expert":
             expert_batch = dict(batch)
 
@@ -291,6 +294,7 @@ def main() -> None:
                 noise = fixed_noise(teacher, teacher_batch, args.seed + step)
                 teacher.reset()
                 teacher_actions = teacher.predict_action_chunk(teacher_batch, noise=noise)
+            teacher_action_noise = compatible_noise(student, batch, noise)
             batch[ACTION] = teacher_actions.detach()
 
         torch.manual_seed(args.seed + 10_000 + step)
@@ -298,13 +302,19 @@ def main() -> None:
             teacher_batch = teacher_preprocessor(dict(raw_batch))
             loss = teacher_velocity_loss(student, batch, teacher, teacher_batch, args.seed + step)
         elif objective == "mixed_action_expert" and expert_batch is not None:
-            teacher_loss, _ = student.forward(batch)
+            if teacher_action_noise is not None:
+                teacher_loss, _ = student.forward(batch, noise=teacher_action_noise)
+            else:
+                teacher_loss, _ = student.forward(batch)
             expert_loss, _ = student.forward(expert_batch)
             loss = args.teacher_loss_weight * teacher_loss + args.expert_loss_weight * expert_loss
         else:
-            loss, _ = student.forward(batch)
+            if teacher_action_noise is not None:
+                loss, _ = student.forward(batch, noise=teacher_action_noise)
+            else:
+                loss, _ = student.forward(batch)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_((p for p in student.parameters() if p.requires_grad), 10.0)
+        torch.nn.utils.clip_grad_norm_(trainable_parameters, 10.0)
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
 
@@ -331,7 +341,7 @@ def main() -> None:
                 student, student_preprocessor, student_postprocessor,
                 device=device, commands=cl_commands,
                 cap=args.closed_loop_cap, seed=args.closed_loop_seed,
-                delta_actions=args.delta_actions,
+                delta_actions=args.delta_actions, episodes=args.closed_loop_episodes,
             )
             print(f"  step {step:5d}/{args.steps}  closed-loop {format_metrics(cl)}", flush=True)
             cl_history.append({"step": args.step_offset + step, **cl})

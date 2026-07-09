@@ -17,6 +17,7 @@ from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 
 EMBED_KEY = "model.vlm_with_expert.vlm.model.text_model.embed_tokens.weight"
+EMBED_MODULE_KEY = "model.vlm_with_expert.vlm.model.text_model.embed_tokens.embedding.weight"
 ID_MAP_KEY = "model.vlm_with_expert.vlm.model.text_model.embed_tokens.id_map"
 LM_HEAD_KEY = "model.vlm_with_expert.vlm.lm_head.weight"
 
@@ -43,19 +44,55 @@ class CompactTokenEmbedding(nn.Module):
         return F.embedding(compact_ids, self.weight)
 
 
+class CompactTokenEmbeddingModule(nn.Module):
+    """Compact embedding compatible with checkpoints saved as ``embedding.weight``."""
+
+    def __init__(
+        self,
+        original_vocab_size: int,
+        compact_vocab_size: int,
+        embedding_dim: int,
+        fallback_original_id: int,
+    ):
+        super().__init__()
+        self.num_embeddings = original_vocab_size
+        self.embedding_dim = embedding_dim
+        self.fallback_original_id = fallback_original_id
+        self.embedding = nn.Embedding(compact_vocab_size, embedding_dim)
+        self.register_buffer("id_map", torch.zeros(original_vocab_size, dtype=torch.long), persistent=True)
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        compact_ids = self.id_map[input_ids]
+        return self.embedding(compact_ids)
+
+
 def _replace_embedding(policy: SmolVLAPolicy, model_file: Path, remap_file: Path) -> None:
     with remap_file.open() as f:
         remap = json.load(f)
 
     with safe_open(str(model_file), framework="pt", device="cpu") as tensors:
-        compact_vocab_size, embedding_dim = tensors.get_tensor(EMBED_KEY).shape
+        if EMBED_KEY in tensors.keys():
+            key = EMBED_KEY
+        elif EMBED_MODULE_KEY in tensors.keys():
+            key = EMBED_MODULE_KEY
+        else:
+            raise KeyError(f"missing compact embedding tensor in {model_file}")
+        compact_vocab_size, embedding_dim = tensors.get_tensor(key).shape
 
-    compact = CompactTokenEmbedding(
+    embedding_cls = CompactTokenEmbedding if key == EMBED_KEY else CompactTokenEmbeddingModule
+    compact = embedding_cls(
         original_vocab_size=remap["original_vocab_size"],
         compact_vocab_size=compact_vocab_size,
         embedding_dim=embedding_dim,
         fallback_original_id=remap["fallback_original_id"],
     )
+    kept_token_ids = remap.get("kept_token_ids")
+    if kept_token_ids is not None:
+        fallback_row = kept_token_ids.index(remap["fallback_original_id"])
+        id_map = torch.full((remap["original_vocab_size"],), fallback_row, dtype=torch.long)
+        for row, original_id in enumerate(kept_token_ids):
+            id_map[int(original_id)] = row
+        compact.id_map.copy_(id_map)
     policy.model.vlm_with_expert.vlm.model.text_model.embed_tokens = compact
 
 
@@ -80,6 +117,26 @@ def _config_from_json(pretrained_path: Path) -> SmolVLAConfig:
     return SmolVLAConfig(**data)
 
 
+def _pruning_meta(pretrained_path: Path) -> dict:
+    path = pretrained_path / "pruning_meta.json"
+    if not path.exists():
+        return {}
+    with path.open() as f:
+        return json.load(f)
+
+
+def _apply_vlm_config_overrides(config, pruning_meta: dict) -> None:
+    overrides = pruning_meta.get("vlm_config_overrides") or {}
+    text_config = getattr(config, "text_config", None)
+    vision_config = getattr(config, "vision_config", None)
+    if text_config is not None and overrides.get("text_intermediate_size") is not None:
+        text_config.intermediate_size = int(overrides["text_intermediate_size"])
+    if vision_config is not None and overrides.get("vision_intermediate_size") is not None:
+        vision_config.intermediate_size = int(overrides["vision_intermediate_size"])
+    if vision_config is not None and overrides.get("vision_num_hidden_layers") is not None:
+        vision_config.num_hidden_layers = int(overrides["vision_num_hidden_layers"])
+
+
 def load_pruned_smolvla(
     pretrained_path: str | Path,
     *,
@@ -99,6 +156,7 @@ def load_pruned_smolvla(
     remap_file = pretrained_path / "vocab_remap.json"
 
     cfg = _config_from_json(pretrained_path)
+    pruning_meta = _pruning_meta(pretrained_path)
     for key, value in (config_overrides or {}).items():
         setattr(cfg, key, value)
     if device is not None:
@@ -114,7 +172,9 @@ def load_pruned_smolvla(
 
     def local_config_from_pretrained(*args, **kwargs):
         kwargs.setdefault("local_files_only", True)
-        return orig_auto_config(*args, **kwargs)
+        config = orig_auto_config(*args, **kwargs)
+        _apply_vlm_config_overrides(config, pruning_meta)
+        return config
 
     def local_processor_from_pretrained(*args, **kwargs):
         kwargs.setdefault("local_files_only", True)

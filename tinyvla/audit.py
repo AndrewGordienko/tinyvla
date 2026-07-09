@@ -2,35 +2,23 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
+import sys
 from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+from .fast_dataset import FastChunkDataset
 from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 from lerobot.utils.constants import ACTION
 
 from .benchmark import load_policy, make_processors
 from .paths import DATASETS_ROOT
-
-
-def group_for_param(name: str) -> str:
-    if ".vision_model." in name:
-        return "vision_encoder"
-    if ".connector." in name:
-        return "vision_connector"
-    if ".text_model." in name:
-        return "vlm_text"
-    if ".lm_expert." in name:
-        return "action_expert"
-    if ".state_proj." in name:
-        return "state_proj"
-    if ".action_" in name:
-        return "action_projectors"
-    return "other"
+from .trainability import TRAINABLE_MODES, group_for_param, set_trainable
 
 
 def tensor_batch_clone(batch: dict) -> dict:
@@ -145,24 +133,30 @@ def main() -> None:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--trainable", choices=TRAINABLE_MODES, default="checkpoint",
+                        help="Apply a trainability mode before measuring gradients.")
     args = parser.parse_args()
 
     device = torch.device(args.device)
     meta = LeRobotDatasetMetadata(args.repo_id, root=args.root)
     delta_timestamps = {"action": [i / meta.fps for i in range(SmolVLAConfig().chunk_size)]}
-    dataset = LeRobotDataset(args.repo_id, root=args.root, delta_timestamps=delta_timestamps)
+    dataset = FastChunkDataset(args.repo_id, root=args.root, delta_timestamps=delta_timestamps)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=0, drop_last=True)
     raw_batch = next(iter(loader))
 
     model_path = Path(args.model)
-    policy = load_policy(model_path, args.device, meta).to(device)
-    preprocessor, _ = make_processors(policy, model_path, device, meta)
+    with contextlib.redirect_stdout(sys.stderr):
+        policy = load_policy(model_path, args.device, meta).to(device)
+        trainable_params = set_trainable(policy, args.trainable)
+        preprocessor, _ = make_processors(policy, model_path, device, meta)
     batch = preprocessor(dict(raw_batch))
 
     result = {
         "model": str(model_path),
         "dataset": {"repo_id": args.repo_id, "root": args.root, "frames": meta.total_frames},
         "device": args.device,
+        "trainable_mode": args.trainable,
+        "trainable_params": trainable_params,
         "config": config_summary(policy),
         "audit": audit_batch(policy, batch, args.seed),
     }

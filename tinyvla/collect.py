@@ -30,13 +30,16 @@ EXPERT = dict(gain=0.25, max_dq=0.03)   # natural pace: ~70-140 frame episodes, 
 
 CAMERAS = ["front"]              # front-only (wrist cam removed: it hurt closed-loop)
 
-FEATURES = {
-    "observation.state": {"dtype": "float32", "shape": (6,), "names": JOINT_NAMES},
-    "action": {"dtype": "float32", "shape": (6,), "names": JOINT_NAMES},
-    **{f"observation.images.{cam}": {"dtype": "video", "shape": (IMG, IMG, 3),
-                                     "names": ["height", "width", "channels"]}
-       for cam in CAMERAS},
-}
+
+def make_features(use_videos: bool) -> dict:
+    return {
+        "observation.state": {"dtype": "float32", "shape": (6,), "names": JOINT_NAMES},
+        "action": {"dtype": "float32", "shape": (6,), "names": JOINT_NAMES},
+        **{f"observation.images.{cam}": {"dtype": "video" if use_videos else "image",
+                                         "shape": (IMG, IMG, 3),
+                                         "names": ["height", "width", "channels"]}
+           for cam in CAMERAS},
+    }
 
 
 def render_cam(env, renderer, cam):
@@ -50,6 +53,14 @@ def main():
     ap.add_argument("--repo-id", default="local/so101_pickplace")
     ap.add_argument("--root", default=str(DATASETS_ROOT / "so101_pickplace"))
     ap.add_argument("--seed", type=int, default=100)
+    ap.add_argument("--delta-actions", action="store_true",
+                    help="Store joint deltas (action - state) instead of absolute targets, plus a "
+                         "delta_actions.json marker. The expert is deterministic per seed, so a delta "
+                         "and an absolute collection with the same seed contain identical trajectories.")
+    ap.add_argument("--no-videos", action="store_true",
+                    help="Store frames as images (parquet-embedded PNG) instead of AV1 video. "
+                         "Bigger on disk but much faster to TRAIN on: video needs a torchcodec "
+                         "seek+decode per random sample; images are a cheap PNG decode.")
     args = ap.parse_args()
 
     if os.path.exists(args.root):
@@ -61,11 +72,13 @@ def main():
     ds = LeRobotDataset.create(
         repo_id=args.repo_id,
         fps=int(env.control_hz),
-        features=FEATURES,
+        features=make_features(use_videos=not args.no_videos),
         root=args.root,
         robot_type="so101",
-        use_videos=True,
+        use_videos=not args.no_videos,
     )
+    if args.no_videos:
+        ds.start_image_writer(num_threads=8)   # don't block the sim on PNG encodes
 
     n_success = 0
     for ep in range(args.episodes):
@@ -78,7 +91,7 @@ def main():
             ds.add_frame({
                 "observation.state": state,
                 **images,
-                "action": action,
+                "action": (action - state) if args.delta_actions else action,
                 "task": env.instruction,             # one of the 8 supported commands
             })
             env.step(action)
@@ -89,6 +102,10 @@ def main():
         ds.save_episode()
         if (ep + 1) % 20 == 0:
             print(f"  episode {ep + 1}/{args.episodes}  (running success {n_success}/{ep + 1})")
+
+    if args.delta_actions:
+        with open(os.path.join(args.root, "delta_actions.json"), "w") as f:
+            f.write('{"delta_actions": true}\n')
 
     print(f"\nDone. {args.episodes} episodes, expert success {n_success}/{args.episodes}, "
           f"{ds.num_frames} frames")
