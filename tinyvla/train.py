@@ -15,6 +15,7 @@ Run:  python3 -m tinyvla.train --steps 2000 --batch-size 8
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import time
 from contextlib import nullcontext
@@ -46,6 +47,8 @@ def main():
     ap.add_argument("--root", default=str(DATASETS_ROOT / "so101_pickplace"))
     ap.add_argument("--output", default=str(CHECKPOINTS_ROOT / "smolvla_pickplace"))
     ap.add_argument("--steps", type=int, default=2000)
+    ap.add_argument("--total-steps", type=int, default=None)
+    ap.add_argument("--stop-after", type=int, default=None)
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--seed", type=int, default=1234)
@@ -103,6 +106,10 @@ def main():
                          "'absolute' actions. Off by default: unmarked legacy artifacts error "
                          "so an unknown action representation is never assumed silently.")
     args = ap.parse_args()
+    planned_steps = args.total_steps if args.total_steps is not None else args.steps
+    run_until = min(planned_steps, args.stop_after) if args.stop_after is not None else planned_steps
+    if run_until <= 0 or run_until > planned_steps:
+        raise SystemExit("invalid stop/total step configuration")
     cl_commands = [int(x) for x in args.closed_loop_commands.split(",") if x != ""]
     episode_indices = [int(x) for x in args.episodes.split(",")] if args.episodes else None
     seed_everything(args.seed)
@@ -181,7 +188,7 @@ def main():
         # LeRobot's CosineDecayWithWarmupScheduler auto-scales warmup/decay when
         # --steps is shorter than the configured 30k decay horizon, so short overfit
         # runs still warm up and decay proportionally instead of at a flat peak LR.
-        sched = policy.config.get_scheduler_preset().build(opt, num_training_steps=args.steps)
+        sched = policy.config.get_scheduler_preset().build(opt, num_training_steps=planned_steps)
     elif args.scheduler == "linear" and args.warmup_steps > 0:
         sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / args.warmup_steps))
     else:
@@ -189,6 +196,14 @@ def main():
 
     start_step = 0
     if args.resume:
+        prior_meta = Path(args.resume) / "runtime_metadata.json"
+        if prior_meta.exists():
+            prior = json.loads(prior_meta.read_text())
+            expected = {"planned_steps": planned_steps, "lr": args.lr, "scheduler": args.scheduler,
+                        "batch_size": args.batch_size, "seed": args.seed}
+            mismatches = {k: (prior.get(k), v) for k, v in expected.items() if prior.get(k) != v}
+            if mismatches:
+                raise SystemExit(f"resume configuration mismatch: {mismatches}")
         resume_path = Path(args.resume) / "training_state.pt"
         if not resume_path.exists():
             raise SystemExit(f"resume state missing: {resume_path}")
@@ -220,8 +235,10 @@ def main():
     best_cl = -1.0
     def save_progress(step: int) -> None:
         metadata = {
-            "repo_id": args.repo_id, "dataset_root": str(Path(args.root).resolve()),
-            "step": step, "steps_this_run": args.steps, "init_from": args.init_from,
+          "repo_id": args.repo_id, "dataset_root": str(Path(args.root).resolve()),
+            "step": step, "steps_this_run": run_until, "planned_steps": planned_steps,
+            "lr": args.lr, "scheduler": args.scheduler, "batch_size": args.batch_size,
+            "init_from": args.init_from,
             "resume": args.resume, "episodes": episode_indices,
         }
         save_runtime(runtime, args.output, seed=args.seed, extra_metadata=metadata)
@@ -245,7 +262,7 @@ def main():
         torch.manual_seed(args.seed + 991)
         fixed_noise = torch.randn((args.batch_size, policy.config.chunk_size, policy.config.max_action_dim), device=device)
         fixed_time = torch.rand(args.batch_size, device=device).to(dtype=torch.float32) * 0.999 + 0.001
-    for step in range(start_step + 1, args.steps + 1):
+    for step in range(start_step + 1, run_until + 1):
         batch = fixed_batch if fixed_batch is not None else next(batches)
         batch = preprocessor(batch)
         with amp:

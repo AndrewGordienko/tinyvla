@@ -68,3 +68,22 @@ The verification artifact includes hashes, parameter updates, exact action
 save/reload comparison, optimizer/scheduler steps, finite rollout action range,
 and a short video. The flow-matching fixed-batch loss is reported honestly as a
 numerical diagnostic; it is not a behavioral acceptance gate.
+
+The fixed-tuple LR diagnostic is in `artifacts/fixed_tuple_lr_diagnostic_20260711/diagnostic.json`.
+It hashes raw indices, processed tensors, padding/language fields, fixed noise and
+timestep, target velocity, and normalization statistics at steps 0/10/25. The
+selected rehearsal/teacher LR is `3e-5`: it reduced eval-mode fixed-tuple loss
+from `1.194` to `0.0152` with exact save/reload action equality. `1e-4` reached a
+similar endpoint but is more aggressive; `1e-5` converged more slowly.
+
+The bounded CUDA pilot command, once H200 access is restored, is:
+
+```bash
+DEVICE=cuda STEPS=500 TOTAL_STEPS=500 BATCH_SIZE=32 NUM_WORKERS=8 \
+LR=3e-5 SAVE_EVERY=100 EVAL_EVERY=100 \
+OUTPUT_DIR=data/checkpoints/smolvla_teacher_command0_pilot \
+bash scripts/h200_smolvla_teacher_command0.sh
+```
+
+Promote to the long run only after its held-fixed loss, finite bounded actions,
+stage metric, and CUDA save/resume checks pass.
