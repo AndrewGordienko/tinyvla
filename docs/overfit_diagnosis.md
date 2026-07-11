@@ -373,3 +373,68 @@ demonstrated lever.
 ```bash
 MUJOCO_GL=glfw .venv/bin/python -m scripts.controlled_dagger_mlp   # privileged DAgger validation
 ```
+
+## Milestone 5: image/proprio CNN DAgger — privileged vs deployable (`scripts/controlled_dagger_cnn.py`)
+
+Tiny image(84²)+proprio CNN (~89k params), command 0, 4 memorized + 20 held-out
+random layouts, canonical 4 cm, learner-only, 3 seeds, matched size N / matched
+updates. Two observation conditions:
+
+- **privileged-grasp** (upper bound): image + qpos6 + qvel6 + prev6 + **grasped1**.
+  The grasped bit is simulator-only state (not readable from one frame on a real
+  arm), so this is an inflated ceiling, not the deployable gate.
+- **deployable-no-grasp** (`--exclude-grasp`): image + qpos6 (incl. gripper joint
+  position) + qvel6 + prev6 — all real-arm-measurable proprioception.
+
+**Aggregated success (3 seeds):**
+
+| condition | control | memorized /12 | held-out /60 |
+|---|---|---|---|
+| privileged-grasp | DAgger (final) | **8/12 (67%)** | **21/60 (35%)** |
+| privileged-grasp | demos-only (round 0) | 0/12 | n/m |
+| deployable-no-grasp | demos-only | **0/12** | **0/60** |
+| deployable-no-grasp | perturbation | **0/12** | **0/60** |
+| deployable-no-grasp | DAgger (final) | **3/12 (25%)** | **6/60 (10%)** |
+
+**Held-out success by layout distance to nearest training scene (deployable, agg):**
+
+| bin (m) | demos-only | perturbation | DAgger |
+|---|---|---|---|
+| <0.05 | 0/45 | 0/45 | **5/45** |
+| 0.05–0.10 | 0/15 | 0/15 | **1/15** |
+| ≥0.10 | 0/0 | 0/0 | 0/0 |
+
+The held-out generator samples cubes from the same narrow range as training, so
+*every* held-out layout is within ~0.1 m of a training scene — this set measures
+near-neighbour generalization only, **not** distributionally-far scenes.
+
+### Conclusions
+
+1. **On-policy coverage is the lever, in the deployable condition too.** DAgger
+   strictly beats BOTH demos-only (0/60) and perturbation (0/60) on held-out
+   (6/60), every seed ≥1; the perturbation control is no better than demos-only
+   (off-policy arm noise mostly worsens *approach*), reproducing the MLP finding.
+2. **But the grasped bit was a large crutch.** Removing it drops DAgger from
+   8/12→3/12 memorized and 21/60→6/60 held-out. The privileged number was
+   materially inflated.
+3. **The deployable CNN does not solve the task.** 25% memorized / 10% held-out is
+   far from competent, and its held-out wins are concentrated on the nearest
+   layouts (<0.05 m) — near-neighbour, not broad generalization.
+
+### Promotion decision
+
+DAgger meets the *directional* rule (beats both controls on held-out without
+simulator-only state) but the *absolute* deployable performance is weak and
+near-neighbour-limited. **Do NOT promote SmolVLA DAgger / unfreeze the H200 on
+this evidence.** Before SmolVLA: (a) replace the privileged grasped bit with a
+real observable (temporal frame stack to infer grasp from motion, or a
+contact/gripper-current sensor), (b) widen the held-out layout range to actually
+test generalization, (c) a stronger deployable policy class (frame stack / action
+chunking / larger CNN) before concluding image-based DAgger can or cannot reach
+4/4 deployably.
+
+```bash
+# deployable gate (no privileged grasp bit)
+PYTORCH_ENABLE_MPS_FALLBACK=1 MUJOCO_GL=glfw .venv/bin/python -m scripts.cnn_dagger_probe --exclude-grasp
+PYTORCH_ENABLE_MPS_FALLBACK=1 MUJOCO_GL=glfw .venv/bin/python -m scripts.controlled_dagger_cnn --exclude-grasp
+```
