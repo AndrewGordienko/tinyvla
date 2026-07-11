@@ -297,7 +297,7 @@ def supervised_gate(data, cfg, seed, device, steps=1200, n=64, lr=3e-4):
     }
 
 
-def train_policy(data, cfg, seed, device, steps, lr=3e-4):
+def train_policy(data, cfg, seed, device, steps, lr=1e-5):
     """Train from scratch on the aggregate, with normalization fit to that aggregate."""
     seed_everything(seed)
     images = torch.from_numpy(np.asarray(data["imgs"], np.float32))
@@ -394,13 +394,23 @@ def _summary(rows):
     return {key: sum(row[key] for row in rows) for key in ("approach", "grasp", "transport", "release", "success")} | {"n": len(rows)}
 
 
-def four_scene_dagger(scenes, cfg, seed, device, rounds, steps, cap, replan, video_dir):
+def supervised_gate_passed(gate: dict) -> bool:
+    """Accept both the legacy ladder JSON and the deterministic-gate schema."""
+    return bool(gate.get("temporal", {}).get("passed", False)
+                or gate.get("gates", {}).get("sixtyfour_stable", False))
+
+
+def four_scene_dagger(scenes, cfg, seed, device, rounds, steps, cap, replan, video_dir, output_path, lr=1e-5):
     """One-seed promotion experiment; deliberately no held-out or multi-seed work."""
     demos = collect_demos(scenes, cfg["n_frames"], cfg["views"], cfg["chunk"], seed)
     aggregate = {key: demos[key] for key in ("imgs", "state", "label", "mask", "stage")}
     curve, final = [], None
+    progress = {"status": "training", "seed": seed, "config": cfg, "replan_actions": replan,
+                "learning_rate": lr, "rounds": [], "videos": []}
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(progress, indent=2) + "\n")
     for rnd in range(rounds):
-        net, norm = train_policy(aggregate, cfg, seed, device, steps)
+        net, norm = train_policy(aggregate, cfg, seed, device, steps, lr=lr)
         rows, additions = [], {"imgs": [], "state": [], "label": [], "mask": [], "stage": []}
         for i, scene in enumerate(scenes):
             row, visited = rollout(net, norm, cfg, scene, cap, device, collect=rnd < rounds - 1, replan=replan)
@@ -412,27 +422,31 @@ def four_scene_dagger(scenes, cfg, seed, device, rounds, steps, cap, replan, vid
                     additions[key].extend(v[key] for v in visited)
         curve.append({"round": rnd, "train_size": len(aggregate["state"]), "new_learner_states": len(additions["state"]),
                       **_summary(rows), "per_scene": rows})
+        progress["rounds"] = curve
+        progress["last_completed"] = {"round": rnd, "phase": "learner_rollouts"}
+        output_path.write_text(json.dumps(progress, indent=2) + "\n")
         final = (net, norm)
         if rnd < rounds - 1:
             for key in additions:
                 aggregate[key] = np.concatenate([aggregate[key], np.asarray(additions[key])])
     # Videos only for the final model: each success and the first representative failure.
     net, norm = final
-    videos, failure_saved = [], False
+    videos = []
     final_rows = []
     for i, scene in enumerate(scenes):
-        dry, _ = rollout(net, norm, cfg, scene, cap, device, replan=replan)
-        save = bool(dry["success"]) or not failure_saved
-        path = Path(video_dir) / f"seed{seed}_{'success' if dry['success'] else 'failure'}_scene{i}.mp4" if save else None
+        path = Path(video_dir) / f"seed{seed}_scene{i}.mp4"
         row, _ = rollout(net, norm, cfg, scene, cap, device, replan=replan, video_path=path)
-        if not row["success"]:
-            failure_saved = True
         final_rows.append(row)
-        if path is not None:
-            videos.append(str(path))
-    return {"seed": seed, "config": cfg, "replan_actions": replan, "rounds": curve,
+        videos.append(str(path))
+        progress["videos"] = videos
+        progress["last_completed"] = {"phase": "video", "scene": i}
+        output_path.write_text(json.dumps(progress, indent=2) + "\n")
+    result = {"status": "complete", "seed": seed, "config": cfg, "replan_actions": replan,
+            "learning_rate": lr, "rounds": curve,
             "final": _summary(final_rows), "promotion_pass": sum(r["success"] for r in final_rows) >= 3,
             "videos": videos}
+    output_path.write_text(json.dumps(result, indent=2) + "\n")
+    return result
 
 
 def main() -> None:
@@ -450,23 +464,26 @@ def main() -> None:
     ap.add_argument("--replan-actions", type=int, default=1, choices=(1, 2, 3, 4))
     ap.add_argument("--action-chunk", type=int, choices=(1, 4, 8), help="Override the architecture chunk; 4/8 only after temporal gate passes.")
     ap.add_argument("--video-dir", default="artifacts/truth_harness/deployable_rollouts")
+    ap.add_argument("--lr", type=float, default=1e-5)
     args = ap.parse_args()
     scenes = json.loads((ROOT / "scene_manifest.json").read_text())["scenes"]
     if args.four_scene:
         if not args.gate_json:
             raise SystemExit("--four-scene requires --gate-json from a passing supervised run")
         gate = json.loads(Path(args.gate_json).read_text())
-        if not gate.get("temporal", {}).get("passed", False):
+        temporal_passed = supervised_gate_passed(gate)
+        if not temporal_passed:
             raise SystemExit("Temporal 64-sample supervised gate has not passed; DAgger is blocked.")
         cfg = dict(LADDER[args.architecture])
         if args.action_chunk:
-            if args.action_chunk > 1 and not gate["temporal"]["passed"]:
+            if args.action_chunk > 1 and not temporal_passed:
                 raise SystemExit("Chunk sizes 4/8 are blocked until temporal supervised gate passes.")
             cfg["chunk"] = args.action_chunk
+        output = Path(args.output)
+        if output.exists():
+            raise SystemExit(f"Refusing to overwrite existing rollout evidence: {output}")
         result = four_scene_dagger(scenes, cfg, args.seed, args.device, args.rounds, args.steps,
-                                   args.cap, args.replan_actions, args.video_dir)
-        out = Path(args.output)
-        out.parent.mkdir(parents=True, exist_ok=True); out.write_text(json.dumps(result, indent=2) + "\n")
+                                   args.cap, args.replan_actions, args.video_dir, output, args.lr)
         print(json.dumps({"final": result["final"], "promotion_pass": result["promotion_pass"], "videos": result["videos"]}, indent=2))
         return
     results = {}

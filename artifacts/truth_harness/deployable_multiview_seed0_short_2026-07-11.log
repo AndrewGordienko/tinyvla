@@ -1,0 +1,17 @@
+{
+  "final": {
+    "approach": 0,
+    "grasp": 0,
+    "transport": 0,
+    "release": 0,
+    "success": 0,
+    "n": 4
+  },
+  "promotion_pass": false,
+  "videos": [
+    "artifacts/truth_harness/deployable_rollouts_multiview_seed0_short/seed0_scene0.mp4",
+    "artifacts/truth_harness/deployable_rollouts_multiview_seed0_short/seed0_scene1.mp4",
+    "artifacts/truth_harness/deployable_rollouts_multiview_seed0_short/seed0_scene2.mp4",
+    "artifacts/truth_harness/deployable_rollouts_multiview_seed0_short/seed0_scene3.mp4"
+  ]
+}

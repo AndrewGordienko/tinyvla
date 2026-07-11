@@ -1,0 +1,16 @@
+{
+  "status": "training",
+  "seed": 0,
+  "config": {
+    "n_frames": 4,
+    "views": [
+      "front",
+      "wrist"
+    ],
+    "chunk": 1
+  },
+  "replan_actions": 1,
+  "learning_rate": 1e-05,
+  "rounds": [],
+  "videos": []
+}

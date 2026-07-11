@@ -1,0 +1,113 @@
+{
+  "status": "complete",
+  "seed": 0,
+  "config": {
+    "n_frames": 4,
+    "views": [
+      "front",
+      "wrist"
+    ],
+    "chunk": 1
+  },
+  "replan_actions": 1,
+  "learning_rate": 1e-05,
+  "rounds": [
+    {
+      "round": 0,
+      "train_size": 204,
+      "new_learner_states": 880,
+      "approach": 3,
+      "grasp": 3,
+      "transport": 3,
+      "release": 3,
+      "success": 2,
+      "n": 4,
+      "per_scene": [
+        {
+          "approach": 1,
+          "grasp": 1,
+          "transport": 1,
+          "release": 1,
+          "success": 1
+        },
+        {
+          "approach": 0,
+          "grasp": 0,
+          "transport": 0,
+          "release": 0,
+          "success": 0
+        },
+        {
+          "approach": 1,
+          "grasp": 1,
+          "transport": 1,
+          "release": 1,
+          "success": 1
+        },
+        {
+          "approach": 1,
+          "grasp": 1,
+          "transport": 1,
+          "release": 1,
+          "success": 0
+        }
+      ]
+    },
+    {
+      "round": 1,
+      "train_size": 1084,
+      "new_learner_states": 0,
+      "approach": 0,
+      "grasp": 0,
+      "transport": 0,
+      "release": 0,
+      "success": 0,
+      "n": 4,
+      "per_scene": [
+        {
+          "approach": 0,
+          "grasp": 0,
+          "transport": 0,
+          "release": 0,
+          "success": 0
+        },
+        {
+          "approach": 0,
+          "grasp": 0,
+          "transport": 0,
+          "release": 0,
+          "success": 0
+        },
+        {
+          "approach": 0,
+          "grasp": 0,
+          "transport": 0,
+          "release": 0,
+          "success": 0
+        },
+        {
+          "approach": 0,
+          "grasp": 0,
+          "transport": 0,
+          "release": 0,
+          "success": 0
+        }
+      ]
+    }
+  ],
+  "final": {
+    "approach": 0,
+    "grasp": 0,
+    "transport": 0,
+    "release": 0,
+    "success": 0,
+    "n": 4
+  },
+  "promotion_pass": false,
+  "videos": [
+    "artifacts/truth_harness/deployable_rollouts_multiview_seed0_short/seed0_scene0.mp4",
+    "artifacts/truth_harness/deployable_rollouts_multiview_seed0_short/seed0_scene1.mp4",
+    "artifacts/truth_harness/deployable_rollouts_multiview_seed0_short/seed0_scene2.mp4",
+    "artifacts/truth_harness/deployable_rollouts_multiview_seed0_short/seed0_scene3.mp4"
+  ]
+}

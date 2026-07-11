@@ -57,6 +57,21 @@ checkpoint metadata. The encoder now uses GroupNorm and stores index metadata as
 plain lists. A fixed Adam rate of `1e-5` is stable; the previous `1e-4`/`3e-4`
 runs produced optimizer overshoot.
 
+## Closed-loop promotion result (2026-07-11)
+
+The bounded temporal multi-view learner-only run completed with **0/4**
+canonical scenes. Stage totals were approach `0/4`, grasp `0/4`, transport
+`0/4`, and release `0/4`; all four videos show the arm moving but stopping
+outside the 4 cm approach radius. A second bounded rerun with the one permitted
+targeted correction (400 updates at the validated `1e-5` rate) was started with
+checkpointed progress but exceeded the time box before round 0 completed.
+
+Therefore the temporal controller does not clear the promotion gate. Do not
+start the 450M job, compression, or H200 work from this branch. The credible
+result is that supervised memorization is solved while deployable closed-loop
+approach remains unsolved; the saved videos and stage metrics are the next
+debugging evidence.
+
 The one-seed four-scene experiment is explicitly separate and is blocked by that
 saved temporal result. It emits approach, grasp, transport, release, and final
 success independently, and writes all successful plus one representative failing

@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from scripts.deployable_controller import SharedEncoder, _masked_mse, expert_chunk_from_snapshot, restore, snapshot
+from scripts.deployable_controller import SharedEncoder, _masked_mse, expert_chunk_from_snapshot, restore, snapshot, supervised_gate_passed
 from scripts.diagnose_supervised_gate import data_audit
 from tinyvla.task import SO101PickPlaceTask
 
@@ -62,3 +62,9 @@ def test_overfit_checkpoint_metadata_is_weights_only_loadable(tmp_path):
     torch.save({"state_dict": {"weight": torch.ones(1)}, "indices": [0, 3], "normalization": {"mean": [0.0]}}, path)
     loaded = torch.load(path, weights_only=True)
     assert loaded["indices"] == [0, 3]
+
+
+def test_new_deterministic_gate_schema_unblocks_controller():
+    assert supervised_gate_passed({"gates": {"sixtyfour_stable": True}})
+    assert supervised_gate_passed({"temporal": {"passed": True}})
+    assert not supervised_gate_passed({"gates": {"sixtyfour_stable": False}})
