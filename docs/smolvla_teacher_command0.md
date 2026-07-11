@@ -42,3 +42,29 @@ launched or represented as complete.
 The recovery/DAgger campaign remains gated on this teacher pilot. Its dataset
 must retain provenance and sample at least 50% original demonstrations in every
 aggregate round before it is allowed to run.
+
+## MPS rehearsal
+
+The bounded local rehearsal uses the same script and production DataLoader:
+
+```bash
+PYTHON=.venv/bin/python PYTORCH_ENABLE_MPS_FALLBACK=1 MUJOCO_GL=glfw \
+DEVICE=mps STEPS=10 BATCH_SIZE=1 NUM_WORKERS=0 SAVE_EVERY=10 EVAL_EVERY=0 \
+VERSIONED_CHECKPOINTS=1 SCHEDULER=config FIXED_BATCH=1 FIXED_NOISE=1 \
+OUTPUT_DIR=data/checkpoints/smolvla_mps_rehearsal \
+bash scripts/h200_smolvla_teacher_command0.sh
+
+PYTHON=.venv/bin/python PYTORCH_ENABLE_MPS_FALLBACK=1 MUJOCO_GL=glfw \
+DEVICE=mps STEPS=25 BATCH_SIZE=1 NUM_WORKERS=0 SAVE_EVERY=25 EVAL_EVERY=25 \
+VERSIONED_CHECKPOINTS=1 SCHEDULER=config FIXED_BATCH=1 FIXED_NOISE=1 \
+OUTPUT_DIR=data/checkpoints/smolvla_mps_rehearsal \
+RESUME=data/checkpoints/smolvla_mps_rehearsal \
+bash scripts/h200_smolvla_teacher_command0.sh
+```
+
+`training_state.pt` now preserves optimizer, scheduler, RNG, and global step;
+`checkpoint_step_10` and `checkpoint_step_25` are immutable rehearsal snapshots.
+The verification artifact includes hashes, parameter updates, exact action
+save/reload comparison, optimizer/scheduler steps, finite rollout action range,
+and a short video. The flow-matching fixed-batch loss is reported honestly as a
+numerical diagnostic; it is not a behavioral acceptance gate.

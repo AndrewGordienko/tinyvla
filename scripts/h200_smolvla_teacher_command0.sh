@@ -5,22 +5,35 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 DATA_ROOT="${DATA_ROOT:-data/datasets/command0_multiview_32}"
-OUT="${OUT:-data/checkpoints/smolvla_teacher_command0}"
+OUTPUT_DIR="${OUTPUT_DIR:-data/checkpoints/smolvla_teacher_command0}"
 DEVICE="${DEVICE:-cuda}"
 STEPS="${STEPS:-8000}"
-BATCH="${BATCH:-32}"
-WORKERS="${WORKERS:-8}"
+BATCH_SIZE="${BATCH_SIZE:-32}"
+NUM_WORKERS="${NUM_WORKERS:-8}"
+SAVE_EVERY="${SAVE_EVERY:-500}"
+EVAL_EVERY="${EVAL_EVERY:-500}"
+RESUME="${RESUME:-}"
+PYTHON="${PYTHON:-python}"
+VERSIONED_CHECKPOINTS="${VERSIONED_CHECKPOINTS:-0}"
+SCHEDULER="${SCHEDULER:-none}"
+FIXED_BATCH="${FIXED_BATCH:-0}"
+FIXED_NOISE="${FIXED_NOISE:-0}"
 
 test -f "$DATA_ROOT/meta/info.json"
 test -f "$DATA_ROOT/action_semantics.json"
 test -f data/models/smolvla_base/model.safetensors
-mkdir -p "$OUT"
-exec python -m tinyvla.train \
+mkdir -p "$OUTPUT_DIR"
+CMD=("$PYTHON" -m tinyvla.train \
   --repo-id local/command0_multiview_32 --root "$DATA_ROOT" \
-  --output "$OUT" --steps "$STEPS" --batch-size "$BATCH" \
-  --num-workers "$WORKERS" --device "$DEVICE" --trainable expert \
-  --n-action-steps 10 --scheduler none --lr 1e-4 \
-  --save-every 500 --log-every 25 \
-  --closed-loop-every 500 --closed-loop-commands 0 \
+  --output "$OUTPUT_DIR" --steps "$STEPS" --batch-size "$BATCH_SIZE" \
+  --num-workers "$NUM_WORKERS" --device "$DEVICE" --trainable expert \
+  --n-action-steps 10 --scheduler "$SCHEDULER" --lr 1e-4 \
+  --save-every "$SAVE_EVERY" --log-every 25 \
+  --closed-loop-every "$EVAL_EVERY" --closed-loop-commands 0 \
   --closed-loop-cap 220 --closed-loop-episodes 4 \
-  --save-best-closed-loop
+  --save-best-closed-loop)
+if [ -n "$RESUME" ]; then CMD+=(--resume "$RESUME"); fi
+if [ "$VERSIONED_CHECKPOINTS" = "1" ]; then CMD+=(--versioned-checkpoints); fi
+if [ "$FIXED_BATCH" = "1" ]; then CMD+=(--fixed-batch); fi
+if [ "$FIXED_NOISE" = "1" ]; then CMD+=(--fixed-noise); fi
+exec "${CMD[@]}"

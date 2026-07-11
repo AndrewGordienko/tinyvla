@@ -15,11 +15,13 @@ Run:  python3 -m tinyvla.train --steps 2000 --batch-size 8
 from __future__ import annotations
 
 import argparse
+import random
 import time
 from contextlib import nullcontext
 from pathlib import Path
 
 import torch
+import numpy as np
 from torch.utils.data import DataLoader
 
 # Import datasets before policies to avoid LeRobot's policy/dataset import cycle.
@@ -51,6 +53,12 @@ def main():
                     help="Optional comma-separated dataset episode indices (for local overfit gates).")
     ap.add_argument("--log-every", type=int, default=25)
     ap.add_argument("--save-every", type=int, default=500)
+    ap.add_argument("--versioned-checkpoints", action="store_true",
+                    help="Also retain immutable checkpoint_step_N directories for rehearsal/audit runs.")
+    ap.add_argument("--fixed-batch", action="store_true",
+                    help="Reuse the first production DataLoader batch every step (numerical rehearsal only).")
+    ap.add_argument("--fixed-noise", action="store_true",
+                    help="Use one fixed flow-matching noise/timestep with --fixed-batch (rehearsal only).")
     ap.add_argument("--num-workers", type=int, default=0, help="dataloader workers (use 8-16 on a GPU box)")
     ap.add_argument("--device", default="mps")
     ap.add_argument("--closed-loop-every", type=int, default=0,
@@ -88,6 +96,8 @@ def main():
     ap.add_argument("--init-from", default=None,
                     help="Warm-start from this checkpoint dir instead of smolvla_base "
                          "(e.g. the previous DAgger round) — later rounds then need fewer steps.")
+    ap.add_argument("--resume", default=None,
+                    help="Resume optimizer/scheduler/RNG/global-step state from a training output directory.")
     ap.add_argument("--allow-legacy-semantics", action="store_true",
                     help="Treat a dataset/checkpoint with no action_semantics marker as "
                          "'absolute' actions. Off by default: unmarked legacy artifacts error "
@@ -106,14 +116,14 @@ def main():
 
     # One canonical runtime owns checkpoint reconstruction, processors, action
     # semantics, strict load auditing, vocabulary coverage, and corrected loss.
-    src = Path(args.init_from) if args.init_from else BASE
+    src = Path(args.init_from) if args.init_from else (Path(args.resume) if args.resume else BASE)
     runtime = load_runtime(
         src,
         meta=meta,
         dataset_root=args.root,
         device=device,
         stats_source="dataset",
-        base_checkpoint=args.init_from is None,
+        base_checkpoint=args.init_from is None and args.resume is None,
         allow_legacy_semantics=args.allow_legacy_semantics,
     )
     policy = runtime.policy
@@ -139,6 +149,7 @@ def main():
                     num_workers=args.num_workers, pin_memory=(device.type == "cuda"),
                     persistent_workers=(args.num_workers > 0), drop_last=True,
                     worker_init_fn=seed_worker, generator=make_generator(args.seed))
+    fixed_batch = next(iter(dl)) if args.fixed_batch else None
     trainable_parameters = [p for p in policy.parameters() if p.requires_grad]
     if not trainable_parameters:
         raise SystemExit(f"no trainable parameters for --trainable {args.trainable}")
@@ -176,6 +187,23 @@ def main():
     else:
         sched = None
 
+    start_step = 0
+    if args.resume:
+        resume_path = Path(args.resume) / "training_state.pt"
+        if not resume_path.exists():
+            raise SystemExit(f"resume state missing: {resume_path}")
+        state = torch.load(resume_path, map_location="cpu", weights_only=False)
+        opt.load_state_dict(state["optimizer"])
+        if sched is not None and state.get("scheduler") is not None:
+            sched.load_state_dict(state["scheduler"])
+        start_step = int(state["global_step"])
+        random.setstate(state["python_rng"])
+        np.random.set_state(state["numpy_rng"])
+        torch.set_rng_state(state["torch_rng"])
+        if torch.cuda.is_available() and state.get("cuda_rng") is not None:
+            torch.cuda.set_rng_state_all(state["cuda_rng"])
+        print(f"resumed global_step={start_step} from {resume_path}")
+
     policy.train()
     print(f"training SmolVLA ({trainable_params/1e6:.0f}M trainable params, "
           f"mode={args.trainable}) on {device} | "
@@ -190,10 +218,38 @@ def main():
     t0 = time.time()
     running = torch.zeros((), device=device)   # accumulate on-device; .item() every step = a GPU sync
     best_cl = -1.0
-    for step, batch in zip(range(1, args.steps + 1), cycle(dl)):
+    def save_progress(step: int) -> None:
+        metadata = {
+            "repo_id": args.repo_id, "dataset_root": str(Path(args.root).resolve()),
+            "step": step, "steps_this_run": args.steps, "init_from": args.init_from,
+            "resume": args.resume, "episodes": episode_indices,
+        }
+        save_runtime(runtime, args.output, seed=args.seed, extra_metadata=metadata)
+        training_state = {
+            "optimizer": opt.state_dict(), "scheduler": sched.state_dict() if sched is not None else None,
+            "global_step": step, "python_rng": random.getstate(), "numpy_rng": np.random.get_state(),
+            "torch_rng": torch.get_rng_state(),
+            "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        }
+        torch.save(training_state, Path(args.output) / "training_state.pt")
+        if args.versioned_checkpoints:
+            versioned = Path(args.output) / f"checkpoint_step_{step}"
+            save_runtime(runtime, versioned, seed=args.seed, extra_metadata=metadata)
+            torch.save(training_state, versioned / "training_state.pt")
+
+    batches = iter(cycle(dl)) if fixed_batch is None else None
+    fixed_noise = fixed_time = None
+    if args.fixed_noise:
+        if not args.fixed_batch:
+            raise SystemExit("--fixed-noise requires --fixed-batch")
+        torch.manual_seed(args.seed + 991)
+        fixed_noise = torch.randn((args.batch_size, policy.config.chunk_size, policy.config.max_action_dim), device=device)
+        fixed_time = torch.rand(args.batch_size, device=device).to(dtype=torch.float32) * 0.999 + 0.001
+    for step in range(start_step + 1, args.steps + 1):
+        batch = fixed_batch if fixed_batch is not None else next(batches)
         batch = preprocessor(batch)
         with amp:
-            loss, _ = policy.forward(batch)
+            loss, _ = policy.forward(batch, noise=fixed_noise, time=fixed_time) if fixed_noise is not None else policy.forward(batch)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(trainable_parameters, grad_clip_norm)
         opt.step()
@@ -208,11 +264,7 @@ def main():
                   f"{step/dt:.2f} it/s")
             running.zero_()
         if step % args.save_every == 0 or step == args.steps:
-            save_runtime(runtime, args.output, seed=args.seed, extra_metadata={
-                "repo_id": args.repo_id, "dataset_root": str(Path(args.root).resolve()),
-                "step": step, "steps_this_run": args.steps, "init_from": args.init_from,
-                "episodes": episode_indices,
-            })
+            save_progress(step)
             print(f"  saved checkpoint to {args.output} (step {step})")
 
         if args.closed_loop_every and (step % args.closed_loop_every == 0 or step == args.steps):

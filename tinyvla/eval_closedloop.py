@@ -22,12 +22,16 @@ DEFAULT_COMMANDS = (0, 1, 2, 3)
 
 
 def build_obs(env: SO101PickPlaceTask, renderer, instruction: str, device, camera: str = "front"):
-    renderer.update_scene(env.data, camera=camera)
-    img = torch.from_numpy(renderer.render()).permute(2, 0, 1).float() / 255.0
+    renderers = renderer if isinstance(renderer, dict) else {camera: renderer}
+    cameras = list(renderers) if isinstance(renderer, dict) else [camera]
+    images = {}
+    for cam in cameras:
+        renderers[cam].update_scene(env.data, camera=cam)
+        images[f"observation.images.{cam}"] = torch.from_numpy(renderers[cam].render()).permute(2, 0, 1).float() / 255.0
     state = torch.from_numpy(env.data.qpos[:6].copy().astype(np.float32))
     return {
         "observation.state": state.unsqueeze(0).to(device),
-        f"observation.images.{camera}": img.unsqueeze(0).to(device),
+        **{key: image.unsqueeze(0).to(device) for key, image in images.items()},
         "task": [instruction],
     }
 
@@ -68,7 +72,11 @@ def evaluate_closed_loop(
     was_training = policy.training
     policy.eval()
     env = SO101PickPlaceTask(seed=seed)
-    renderer = mujoco.Renderer(env.model, height=img, width=img)
+    configured_cameras = list(getattr(getattr(policy, "config", None), "image_features", {}) or {})
+    cameras = [key.removeprefix("observation.images.") for key in configured_cameras]
+    if not cameras:
+        cameras = [camera]
+    renderers = {cam: mujoco.Renderer(env.model, height=img, width=img) for cam in cameras}
     successes, min_dists, final_dists = [], [], []
     per_command_raw: dict[int, dict[str, list[float]]] = {
         int(ci): {"successes": [], "min_dists": [], "final_dists": []} for ci in commands
@@ -86,7 +94,7 @@ def evaluate_closed_loop(
                     dmin = float("inf")
                     hold = 0
                     for _ in range(cap):
-                        obs = preprocessor(build_obs(env, renderer, COMMANDS[ci]["instruction"], device, camera))
+                        obs = preprocessor(build_obs(env, renderers, COMMANDS[ci]["instruction"], device, camera))
                         with torch.inference_mode():
                             action = policy.select_action(obs)
                         action = postprocessor(action).squeeze(0).cpu().numpy()
@@ -112,7 +120,8 @@ def evaluate_closed_loop(
                     row["min_dists"].append(dmin)
                     row["final_dists"].append(final_dist)
         finally:
-            renderer.close()
+            for renderer in renderers.values():
+                renderer.close()
             policy.reset()
             if was_training:
                 policy.train()
