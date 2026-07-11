@@ -1,0 +1,98 @@
+"""Run the local command-0 memorization and deterministic held-out gates."""
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import numpy as np
+import torch
+from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
+
+from .eval_closedloop import evaluate_closed_loop
+from .paths import ARTIFACTS_ROOT
+from .runtime import experiment_metadata, load_runtime
+
+
+def _manifest_positions(root: Path) -> dict[tuple[int, int], dict[str, np.ndarray]]:
+    path = root / "scene_manifest.json"
+    if not path.exists():
+        raise FileNotFoundError(f"four-scene gate requires {path}")
+    data = json.loads(path.read_text())
+    scenes = [scene for scene in data["scenes"] if int(scene["command"]) == 0]
+    return {
+        (0, index): {
+            color: np.asarray(position, dtype=np.float64)
+            for color, position in scene["positions"].items()
+        }
+        for index, scene in enumerate(scenes)
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--repo-id", default="local/truth_gate_command0_4")
+    parser.add_argument(
+        "--root", default=str(ARTIFACTS_ROOT / "truth_harness" / "datasets" / "command0_4")
+    )
+    parser.add_argument("--device", default="mps")
+    parser.add_argument("--seed", type=int, default=4242)
+    parser.add_argument("--cap", type=int, default=140)
+    parser.add_argument("--held-out", type=int, default=20)
+    parser.add_argument(
+        "--output", default=str(ARTIFACTS_ROOT / "truth_harness" / "latest_gates.json")
+    )
+    args = parser.parse_args()
+
+    root = Path(args.root)
+    device = torch.device(args.device)
+    meta = LeRobotDatasetMetadata(args.repo_id, root=root)
+    runtime = load_runtime(
+        args.model, meta=meta, dataset_root=root, device=device, stats_source="checkpoint"
+    )
+    positions = _manifest_positions(root)
+    overfit = evaluate_closed_loop(
+        runtime.policy,
+        runtime.preprocessor,
+        runtime.postprocessor,
+        device=device,
+        commands=[0],
+        cap=args.cap,
+        seed=args.seed,
+        delta_actions=runtime.delta_actions,
+        episodes=len(positions),
+        positions_by_rollout=positions,
+    )
+    held_out = evaluate_closed_loop(
+        runtime.policy,
+        runtime.preprocessor,
+        runtime.postprocessor,
+        device=device,
+        commands=[0],
+        cap=args.cap,
+        seed=args.seed + 100_000,
+        delta_actions=runtime.delta_actions,
+        episodes=args.held_out,
+    )
+    result = {
+        "model": str(Path(args.model).resolve()),
+        "action_semantics": runtime.action_semantics,
+        "load_report": runtime.load_report,
+        "four_scene_overfit": overfit,
+        "held_out": held_out,
+        "thresholds": {
+            "four_scene_overfit": 0.95,
+            "held_out": 0.80,
+            "passed": overfit["success_rate"] >= 0.95 and held_out["success_rate"] >= 0.80,
+        },
+        "experiment": experiment_metadata(seed=args.seed),
+    }
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps(result, indent=2))
+
+
+if __name__ == "__main__":
+    main()

@@ -24,14 +24,11 @@ import mujoco
 from PIL import Image
 
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
-from lerobot.policies.factory import make_policy, make_pre_post_processors
-from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
-
 from .task import SO101PickPlaceTask, COMMANDS, COLORS
 from .collect import IMG, CAMERAS
 from .paths import CHECKPOINTS_ROOT, DATASETS_ROOT
+from .runtime import load_runtime, verify_compact_vocabulary
 
-BASE = "lerobot/smolvla_base"
 PORT = 8009
 
 # ---------------------------------------------------------------------------
@@ -62,21 +59,18 @@ def command_index_from_text(text: str) -> int:
 class Demo:
     def __init__(self, model, root, repo_id, device):
         self.device = torch.device(device)
+        self.model_path = model
         meta = LeRobotDatasetMetadata(repo_id, root=root)
-        cfg = SmolVLAConfig(pretrained_path=model, device=device)
-        self.policy = make_policy(cfg=cfg, ds_meta=meta).to(self.device).eval()
-        nf = {**self.policy.config.input_features, **self.policy.config.output_features}
-        self.pre, self.post = make_pre_post_processors(
-            policy_cfg=cfg, pretrained_path=BASE,
-            preprocessor_overrides={
-                "device_processor": {"device": self.device.type},
-                "normalizer_processor": {"stats": meta.stats, "features": nf,
-                                         "norm_map": self.policy.config.normalization_mapping}},
-            postprocessor_overrides={
-                "unnormalizer_processor": {"stats": meta.stats,
-                                           "features": self.policy.config.output_features,
-                                           "norm_map": self.policy.config.normalization_mapping}},
+        runtime = load_runtime(
+            model,
+            meta=meta,
+            dataset_root=root,
+            device=self.device,
+            stats_source="checkpoint",
         )
+        self.policy = runtime.policy.eval()
+        self.pre, self.post = runtime.preprocessor, runtime.postprocessor
+        self.delta_actions = runtime.delta_actions
         # shared state
         self._jpeg = None
         self._lock = threading.Lock()
@@ -87,6 +81,11 @@ class Demo:
 
     # -- public: queue a command -----------------------------------------
     def submit(self, text: str):
+        try:
+            verify_compact_vocabulary(self.policy, self.model_path, [text])
+        except RuntimeError as error:
+            self.status = {"phase": "rejected", "instruction": text, "result": str(error)}
+            return
         with self._cond:
             self._pending = text
             self.status = {"phase": "queued", "instruction": text, "result": ""}
@@ -136,6 +135,8 @@ class Demo:
                 with torch.inference_mode():
                     action = self.policy.select_action(batch)
                 action = self.post(action).squeeze(0).cpu().numpy()
+                if self.delta_actions:
+                    action = action + env.data.qpos[:6].astype(action.dtype)
                 env.step(action)
                 publish(env)
                 if self._pending is not None:            # new command interrupts

@@ -16,8 +16,8 @@ from .fast_dataset import FastChunkDataset
 from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 from lerobot.utils.constants import ACTION
 
-from .benchmark import load_policy, make_processors
 from .paths import DATASETS_ROOT
+from .runtime import load_runtime
 from .trainability import TRAINABLE_MODES, group_for_param, set_trainable
 
 
@@ -146,9 +146,12 @@ def main() -> None:
 
     model_path = Path(args.model)
     with contextlib.redirect_stdout(sys.stderr):
-        policy = load_policy(model_path, args.device, meta).to(device)
+        runtime = load_runtime(
+            model_path, meta=meta, dataset_root=args.root, device=device, stats_source="dataset"
+        )
+        policy = runtime.policy
         trainable_params = set_trainable(policy, args.trainable)
-        preprocessor, _ = make_processors(policy, model_path, device, meta)
+        preprocessor = runtime.preprocessor
     batch = preprocessor(dict(raw_batch))
 
     result = {

@@ -14,6 +14,7 @@ Run:  python3 -m tinyvla.collect --episodes 60
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import numpy as np
@@ -22,6 +23,7 @@ import mujoco
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from .paths import DATASETS_ROOT
 from .task import SO101ReachTask, JOINT_NAMES, COMMANDS
+from .runtime import write_action_semantics
 
 IMG = 256                    # square camera resolution recorded to the dataset
 EP_LEN = 220                 # max steps per episode (variable-length; 2-step sort ~150)
@@ -53,6 +55,8 @@ def main():
     ap.add_argument("--repo-id", default="local/so101_pickplace")
     ap.add_argument("--root", default=str(DATASETS_ROOT / "so101_pickplace"))
     ap.add_argument("--seed", type=int, default=100)
+    ap.add_argument("--commands", default="0,1,2,3,4,5,6,7",
+                    help="Comma-separated command indices; use 0 for the local overfit gate.")
     ap.add_argument("--delta-actions", action="store_true",
                     help="Store joint deltas (action - state) instead of absolute targets, plus a "
                          "delta_actions.json marker. The expert is deterministic per seed, so a delta "
@@ -62,6 +66,9 @@ def main():
                          "Bigger on disk but much faster to TRAIN on: video needs a torchcodec "
                          "seek+decode per random sample; images are a cheap PNG decode.")
     args = ap.parse_args()
+    commands = [int(value) for value in args.commands.split(",") if value]
+    if not commands or any(command < 0 or command >= len(COMMANDS) for command in commands):
+        raise SystemExit(f"invalid --commands {args.commands!r}")
 
     if os.path.exists(args.root):
         shutil.rmtree(args.root)
@@ -81,8 +88,16 @@ def main():
         ds.start_image_writer(num_threads=8)   # don't block the sim on PNG encodes
 
     n_success = 0
+    scenes = []
     for ep in range(args.episodes):
-        env.reset(command=ep % len(COMMANDS))        # round-robin over all commands
+        command = commands[ep % len(commands)]
+        env.reset(command=command)
+        scenes.append({
+            "episode": ep,
+            "command": command,
+            "instruction": env.instruction,
+            "positions": {color: env.cube_pos(color).tolist() for color in ("red", "blue")},
+        })
         dwell = 0
         for t in range(EP_LEN):
             state = env.data.qpos[:6].copy().astype(np.float32)
@@ -103,9 +118,10 @@ def main():
         if (ep + 1) % 20 == 0:
             print(f"  episode {ep + 1}/{args.episodes}  (running success {n_success}/{ep + 1})")
 
-    if args.delta_actions:
-        with open(os.path.join(args.root, "delta_actions.json"), "w") as f:
-            f.write('{"delta_actions": true}\n')
+    write_action_semantics(args.root, "delta" if args.delta_actions else "absolute")
+    with open(os.path.join(args.root, "scene_manifest.json"), "w") as f:
+        json.dump({"seed": args.seed, "commands": commands, "scenes": scenes}, f, indent=2)
+        f.write("\n")
 
     print(f"\nDone. {args.episodes} episodes, expert success {n_success}/{args.episodes}, "
           f"{ds.num_frames} frames")

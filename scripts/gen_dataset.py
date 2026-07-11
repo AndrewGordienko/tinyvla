@@ -18,6 +18,7 @@ import sys
 import time
 
 from lerobot.datasets.aggregate import aggregate_datasets
+from tinyvla.runtime import write_action_semantics
 
 
 def main():
@@ -82,9 +83,7 @@ def main():
     if os.path.exists(args.out_root):
         import shutil; shutil.rmtree(args.out_root)
     aggregate_datasets(repo_ids, args.out_repo, roots=roots, aggr_root=args.out_root)
-    if args.delta_actions:
-        with open(os.path.join(args.out_root, "delta_actions.json"), "w") as f:
-            f.write('{"delta_actions": true}\n')
+    write_action_semantics(args.out_root, "delta" if args.delta_actions else "absolute")
     print(f"DONE -> {args.out_root}", flush=True)
 
 

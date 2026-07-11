@@ -1,5 +1,9 @@
 # H200 Step B runbook
 
+> **Frozen:** this historical runbook is not an active execution plan. Do not
+> resume H200 work, compression, recovery, or DAgger until
+> [truth_harness.md](truth_harness.md) passes locally.
+
 Last updated: 2026-07-09 19:16 UTC.
 
 This note captures the live H200 run state and the reasoning around it so the

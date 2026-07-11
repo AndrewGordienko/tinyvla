@@ -7,21 +7,23 @@ name = "tinyvla"
 version = "0.1.0"
 description = "Tiny SO-101 MuJoCo and SmolVLA training utilities."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = "==3.11.*"
 dependencies = [
-  "mujoco",
-  "numpy",
-  "pillow",
-  "safetensors",
-  "torch",
+  "mujoco==3.9.0",
+  "numpy==2.2.6",
+  "pillow==12.1.1",
+  "safetensors==0.7.0",
+  "torch==2.10.0",
 ]
 
 [project.optional-dependencies]
 lerobot = [
-  "lerobot",
-  "pandas",
-  "transformers",
+  "datasets==4.8.5",
+  "lerobot[smolvla]==0.4.4",
+  "pandas==2.3.3",
+  "transformers==4.57.6",
 ]
+test = ["pytest==8.4.2"]
 
 [project.scripts]
 tinyvla-benchmark = "tinyvla.benchmark:main"
@@ -30,6 +32,7 @@ tinyvla-collect = "tinyvla.collect:main"
 tinyvla-dashboard = "tinyvla.dashboard:main"
 tinyvla-dataset-viewer = "tinyvla.dataset_viewer:main"
 tinyvla-eval = "tinyvla.eval:main"
+tinyvla-gates = "tinyvla.gates:main"
 tinyvla-serve = "tinyvla.server:main"
 tinyvla-train = "tinyvla.train:main"
 

@@ -3,17 +3,16 @@
 The default objective is the normal SmolVLA flow-matching loss on the local
 SO-101 dataset. With ``--teacher`` enabled, the teacher first produces action
 chunks and the student trains its flow objective toward those teacher chunks.
-``--objective teacher_velocity`` instead matches the teacher's internal
-flow-matching velocity field at the same noise/time sample.
+Normalized velocity matching is intentionally disabled unless teacher/student
+normalization equivalence can be proven. Teacher actions cross the boundary in
+physical units through the teacher postprocessor and student preprocessor.
 """
 from __future__ import annotations
 
 import argparse
-import contextlib
 import gc
 import json
 import os
-import shutil
 import time
 from pathlib import Path
 
@@ -25,63 +24,17 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 import torch
 from torch.utils.data import DataLoader
 
-from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from tinyvla.fast_dataset import FastChunkDataset
 from lerobot.datasets.utils import cycle
-from lerobot.policies.factory import dataset_to_policy_features, make_pre_post_processors
 from lerobot.policies.smolvla.modeling_smolvla import make_att_2d_masks
-from lerobot.policies.smolvla import smolvlm_with_expert as smolvlm_module
 from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 from lerobot.utils.constants import ACTION, OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
 
-from tinyvla.benchmark import load_policy
+from tinyvla.determinism import make_generator, seed_everything, seed_worker
 from tinyvla.eval_closedloop import evaluate_closed_loop, format_metrics
+from tinyvla.runtime import experiment_metadata, load_runtime, save_runtime
 from tinyvla.trainability import RECOVERY_TRAINABLE_MODES, set_trainable
-
-
-@contextlib.contextmanager
-def local_transformers_only():
-    orig_auto_config = smolvlm_module.AutoConfig.from_pretrained
-    orig_auto_processor = smolvlm_module.AutoProcessor.from_pretrained
-
-    def local_config_from_pretrained(*args, **kwargs):
-        kwargs.setdefault("local_files_only", True)
-        return orig_auto_config(*args, **kwargs)
-
-    def local_processor_from_pretrained(*args, **kwargs):
-        kwargs.setdefault("local_files_only", True)
-        return orig_auto_processor(*args, **kwargs)
-
-    smolvlm_module.AutoConfig.from_pretrained = local_config_from_pretrained
-    smolvlm_module.AutoProcessor.from_pretrained = local_processor_from_pretrained
-    try:
-        yield
-    finally:
-        smolvlm_module.AutoConfig.from_pretrained = orig_auto_config
-        smolvlm_module.AutoProcessor.from_pretrained = orig_auto_processor
-
-
-def make_processors(policy, model_path: Path, device: torch.device, meta: LeRobotDatasetMetadata):
-    norm_feats = {**policy.config.input_features, **policy.config.output_features}
-    return make_pre_post_processors(
-        policy_cfg=policy.config,
-        pretrained_path=model_path,
-        preprocessor_overrides={
-            "device_processor": {"device": device.type},
-            "normalizer_processor": {
-                "stats": meta.stats,
-                "features": norm_feats,
-                "norm_map": policy.config.normalization_mapping,
-            },
-        },
-        postprocessor_overrides={
-            "unnormalizer_processor": {
-                "stats": meta.stats,
-                "features": policy.config.output_features,
-                "norm_map": policy.config.normalization_mapping,
-            },
-        },
-    )
 
 
 def fixed_noise(policy, batch: dict, seed: int) -> torch.Tensor:
@@ -165,24 +118,6 @@ def teacher_velocity_loss(
     return torch.nn.functional.mse_loss(student_v[:, :, :dims], teacher_v[:, :, :dims])
 
 
-def copy_pruning_sidecars(source: Path, output: Path) -> None:
-    for name in ("pruning_meta.json", "vocab_remap.json", "layer_pruning_meta.json"):
-        src = source / name
-        if src.exists():
-            shutil.copy2(src, output / name)
-
-
-def save_checkpoint(policy, preprocessor, postprocessor, source: Path, output: Path,
-                    delta_actions: bool = False) -> None:
-    output.mkdir(parents=True, exist_ok=True)
-    policy.save_pretrained(output)
-    preprocessor.save_pretrained(output)
-    postprocessor.save_pretrained(output)
-    copy_pruning_sidecars(source, output)
-    if delta_actions:
-        (output / "delta_actions.json").write_text('{"delta_actions": true}\n')
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--student", required=True)
@@ -199,7 +134,8 @@ def main() -> None:
         "--objective",
         choices=["expert", "teacher_action", "teacher_velocity", "mixed_action_expert"],
         default=None,
-        help="Defaults to teacher_action when --teacher is set, otherwise expert.",
+        help="Defaults to teacher_action when --teacher is set. teacher_velocity is rejected "
+             "until normalization equivalence is proven.",
     )
     parser.add_argument("--teacher-loss-weight", type=float, default=1.0)
     parser.add_argument("--expert-loss-weight", type=float, default=0.25)
@@ -223,10 +159,10 @@ def main() -> None:
     parser.add_argument("--n-action-steps", type=int, default=None,
                         help="Actions executed per replan (<=chunk_size). Try 10 for tighter closed-loop "
                              "(base default 50 causes open-loop drift).")
-    parser.add_argument("--delta-actions", action="store_true",
-                        help="Dataset stores joint deltas (action-state); closed-loop eval adds the live "
-                             "pose back. Set this to match a delta-actions dataset.")
+    parser.add_argument("--delta-actions", action="store_true", default=None,
+                        help="Legacy assertion only; semantics are detected from markers.")
     args = parser.parse_args()
+    seed_everything(args.seed)
     cl_commands = [int(x) for x in args.closed_loop_commands.split(",") if x != ""]
     objective = args.objective or ("teacher_action" if args.teacher else "expert")
     if (objective.startswith("teacher") or objective.startswith("mixed")) and not args.teacher:
@@ -241,18 +177,37 @@ def main() -> None:
     delta_timestamps = {"action": [i / meta.fps for i in range(SmolVLAConfig().chunk_size)]}
     dataset = FastChunkDataset(args.repo_id, root=args.root, delta_timestamps=delta_timestamps)
 
-    student = load_policy(student_path, args.device, meta).to(device)
+    student_runtime = load_runtime(
+        student_path, meta=meta, dataset_root=args.root, device=device, stats_source="dataset"
+    )
+    if args.delta_actions is not None and args.delta_actions != student_runtime.delta_actions:
+        raise SystemExit(
+            f"--delta-actions contradicts detected {student_runtime.action_semantics} semantics"
+        )
+    student = student_runtime.policy
     if args.n_action_steps is not None:
         student.config.n_action_steps = args.n_action_steps
-    student_preprocessor, student_postprocessor = make_processors(student, student_path, device, meta)
+        student.reset()
+    student_preprocessor = student_runtime.preprocessor
+    student_postprocessor = student_runtime.postprocessor
     trainable_params = set_trainable(student, args.trainable)
 
     teacher = None
     teacher_preprocessor = None
+    teacher_postprocessor = None
     if args.teacher:
         teacher_path = Path(args.teacher)
-        teacher = load_policy(teacher_path, args.device, meta).to(device).eval()
-        teacher_preprocessor, _ = make_processors(teacher, teacher_path, device, meta)
+        teacher_runtime = load_runtime(
+            teacher_path, meta=meta, dataset_root=args.root, device=device, stats_source="checkpoint"
+        )
+        teacher = teacher_runtime.policy.eval()
+        teacher_preprocessor = teacher_runtime.preprocessor
+        teacher_postprocessor = teacher_runtime.postprocessor
+        if objective == "teacher_velocity":
+            raise SystemExit(
+                "teacher_velocity is disabled: normalized teacher/student velocity fields are not "
+                "proven to share normalization statistics. Use teacher_action physical conversion."
+            )
 
     loader = DataLoader(
         dataset,
@@ -262,6 +217,8 @@ def main() -> None:
         pin_memory=(device.type == "cuda"),
         persistent_workers=(args.num_workers > 0),
         drop_last=True,
+        worker_init_fn=seed_worker,
+        generator=make_generator(args.seed),
     )
     trainable_parameters = [p for p in student.parameters() if p.requires_grad]
     if not trainable_parameters:
@@ -288,14 +245,18 @@ def main() -> None:
         if objective == "mixed_action_expert":
             expert_batch = dict(batch)
 
-        if objective in {"teacher_action", "mixed_action_expert"} and teacher is not None and teacher_preprocessor is not None:
+        if (objective in {"teacher_action", "mixed_action_expert"} and teacher is not None
+                and teacher_preprocessor is not None and teacher_postprocessor is not None):
             with torch.inference_mode():
                 teacher_batch = teacher_preprocessor(dict(raw_batch))
                 noise = fixed_noise(teacher, teacher_batch, args.seed + step)
                 teacher.reset()
                 teacher_actions = teacher.predict_action_chunk(teacher_batch, noise=noise)
+                teacher_actions_physical = teacher_postprocessor(teacher_actions).detach()
             teacher_action_noise = compatible_noise(student, batch, noise)
-            batch[ACTION] = teacher_actions.detach()
+            teacher_target_raw = dict(raw_batch)
+            teacher_target_raw[ACTION] = teacher_actions_physical
+            batch = student_preprocessor(teacher_target_raw)
 
         torch.manual_seed(args.seed + 10_000 + step)
         if objective == "teacher_velocity" and teacher is not None and teacher_preprocessor is not None:
@@ -324,37 +285,34 @@ def main() -> None:
             print(f"  step {step:5d}/{args.steps}  loss {sum(recent)/len(recent):.5f}", flush=True)
 
         if args.save_every and step % args.save_every == 0:
-            save_checkpoint(student, student_preprocessor, student_postprocessor, student_path, output,
-                            delta_actions=args.delta_actions)
+            save_runtime(student_runtime, output, seed=args.seed, extra_metadata={
+                "repo_id": args.repo_id, "dataset_root": str(Path(args.root).resolve()), "step": step,
+            })
             if args.save_step_subdirs:
-                save_checkpoint(
-                    student,
-                    student_preprocessor,
-                    student_postprocessor,
-                    student_path,
-                    output / f"step_{args.step_offset + step:06d}",
-                    delta_actions=args.delta_actions,
-                )
+                save_runtime(student_runtime, output / f"step_{args.step_offset + step:06d}",
+                             seed=args.seed, extra_metadata={"step": args.step_offset + step})
 
         if args.closed_loop_every and (step % args.closed_loop_every == 0 or step == args.steps):
             cl = evaluate_closed_loop(
                 student, student_preprocessor, student_postprocessor,
                 device=device, commands=cl_commands,
                 cap=args.closed_loop_cap, seed=args.closed_loop_seed,
-                delta_actions=args.delta_actions, episodes=args.closed_loop_episodes,
+                delta_actions=student_runtime.delta_actions, episodes=args.closed_loop_episodes,
             )
             print(f"  step {step:5d}/{args.steps}  closed-loop {format_metrics(cl)}", flush=True)
             cl_history.append({"step": args.step_offset + step, **cl})
             if args.save_best_closed_loop and cl["success_rate"] > best_cl:
                 best_cl = cl["success_rate"]
-                save_checkpoint(student, student_preprocessor, student_postprocessor,
-                                student_path, output / "best_closed_loop",
-                                delta_actions=args.delta_actions)
+                save_runtime(student_runtime, output / "best_closed_loop", seed=args.seed,
+                             extra_metadata={"step": args.step_offset + step,
+                                             "selection": "best_closed_loop"})
                 print(f"    new best closed-loop success {cl['success_rate']:.0%} "
                       f"-> saved {output / 'best_closed_loop'}", flush=True)
 
-    save_checkpoint(student, student_preprocessor, student_postprocessor, student_path, output,
-                    delta_actions=args.delta_actions)
+    save_runtime(student_runtime, output, seed=args.seed, extra_metadata={
+        "repo_id": args.repo_id, "dataset_root": str(Path(args.root).resolve()),
+        "step": args.step_offset + args.steps,
+    })
 
     meta_out = {
         "student": str(student_path),
@@ -362,6 +320,8 @@ def main() -> None:
         "repo_id": args.repo_id,
         "root": args.root,
         "device": args.device,
+        "seed": args.seed,
+        "action_semantics": student_runtime.action_semantics,
         "steps": args.steps,
         "step_offset": args.step_offset,
         "batch_size": args.batch_size,
@@ -377,12 +337,13 @@ def main() -> None:
         "closed_loop_history": cl_history,
         "closed_loop_best_success": max((c["success_rate"] for c in cl_history), default=None),
         "seconds": time.time() - t0,
+        "experiment": experiment_metadata(seed=args.seed),
     }
     (output / "recovery_meta.json").write_text(json.dumps(meta_out, indent=2) + "\n")
     print(json.dumps(meta_out, indent=2))
     print(f"saved recovered checkpoint to {output}")
 
-    del student, student_preprocessor, student_postprocessor, teacher, teacher_preprocessor
+    del student, student_preprocessor, student_postprocessor, teacher, teacher_preprocessor, teacher_postprocessor
     gc.collect()
     if device.type == "mps":
         torch.mps.empty_cache()

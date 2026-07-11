@@ -1,5 +1,10 @@
 # tinyvla
 
+> **Truth-harness freeze:** do not run H200 training, compression, recovery, or
+> DAgger until the local gates in [docs/truth_harness.md](docs/truth_harness.md)
+> pass. All SmolVLA work uses the pinned LeRobot 0.4.4 environment and the
+> repository-owned corrected padded-action loss.
+
 Small, hackable SO-101 MuJoCo and SmolVLA utilities. The shape is deliberately
 closer to tinygrad/PyTorch: importable code lives in `tinyvla/`, commands run via
 package modules or installed console scripts, and local datasets/checkpoints stay

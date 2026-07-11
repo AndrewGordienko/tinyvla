@@ -1,5 +1,9 @@
 # H100 run recipe
 
+> **Frozen historical recipe:** do not execute these GPU steps until
+> [truth_harness.md](truth_harness.md) passes locally. Results below predate the
+> corrected six-dimensional, valid-scalar SmolVLA loss and canonical runtime.
+
 The plumbing changes (2026-07-06) make the H100 runs **measured and selected**
 correctly, and add the three performance levers we identified. This is the order
 to run things so each step's result gates the next.

@@ -1,8 +1,8 @@
 """Fine-tune SmolVLA (smolvla_base) on the scripted-expert reach dataset.
 
 This is a minimal, self-contained training loop that reuses LeRobot's policy and
-processor factories (the official `lerobot-train` CLI's config parser is broken
-under Python 3.14, so we build the pieces directly).
+processor factories while the repository-owned runtime enforces the pinned
+environment, strict loading, action semantics, and corrected action loss.
 
   - loads smolvla_base pretrained weights
   - overrides the input/output normalizers with OUR dataset's stats
@@ -22,30 +22,20 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-# NOTE: import datasets before policies to avoid a circular import in lerobot 0.5.1
+# Import datasets before policies to avoid LeRobot's policy/dataset import cycle.
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from lerobot.datasets.utils import cycle
-from lerobot.policies.factory import make_policy, make_pre_post_processors
-from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 
-from .paths import CHECKPOINTS_ROOT, DATASETS_ROOT
+from .paths import CHECKPOINTS_ROOT, DATASETS_ROOT, MODELS_ROOT
 from .eval_closedloop import evaluate_closed_loop, format_metrics
 from .fast_dataset import FastChunkDataset
+from .determinism import make_generator, seed_everything, seed_worker
+from .runtime import load_runtime, save_runtime
 from .trainability import TRAINABLE_MODES, group_for_param, set_trainable
 
 BACKBONE_GROUPS = ("vision_encoder", "vision_connector", "vlm_text")
 
-BASE = "lerobot/smolvla_base"
-
-
-def save_checkpoint(policy, preprocessor, postprocessor, output: str | Path, *, delta_actions: bool) -> None:
-    output = Path(output)
-    output.mkdir(parents=True, exist_ok=True)
-    policy.save_pretrained(output)
-    preprocessor.save_pretrained(output)
-    postprocessor.save_pretrained(output)
-    if delta_actions:
-        (output / "delta_actions.json").write_text('{"delta_actions": true}\n')
+BASE = MODELS_ROOT / "smolvla_base"
 
 
 def main():
@@ -56,6 +46,9 @@ def main():
     ap.add_argument("--steps", type=int, default=2000)
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument("--seed", type=int, default=1234)
+    ap.add_argument("--episodes", default=None,
+                    help="Optional comma-separated dataset episode indices (for local overfit gates).")
     ap.add_argument("--log-every", type=int, default=25)
     ap.add_argument("--save-every", type=int, default=500)
     ap.add_argument("--num-workers", type=int, default=0, help="dataloader workers (use 8-16 on a GPU box)")
@@ -72,9 +65,8 @@ def main():
     ap.add_argument("--n-action-steps", type=int, default=None,
                     help="Actions executed per replan (<=chunk_size). Base default is 50 "
                          "(50-step open-loop -> compounding drift). Try 10 for tighter closed-loop.")
-    ap.add_argument("--delta-actions", action="store_true",
-                    help="Dataset stores joint deltas (action-state); closed-loop eval adds the live "
-                         "pose back. Set this to match a delta-actions dataset.")
+    ap.add_argument("--delta-actions", action="store_true", default=None,
+                    help="Legacy assertion only. Semantics are detected from dataset/checkpoint markers.")
     ap.add_argument("--save-best-closed-loop", action="store_true",
                     help="Keep the best closed-loop checkpoint in <output>/best_closed_loop.")
     ap.add_argument("--trainable", choices=TRAINABLE_MODES, default="checkpoint",
@@ -92,6 +84,8 @@ def main():
                          "(e.g. the previous DAgger round) — later rounds then need fewer steps.")
     args = ap.parse_args()
     cl_commands = [int(x) for x in args.closed_loop_commands.split(",") if x != ""]
+    episode_indices = [int(x) for x in args.episodes.split(",")] if args.episodes else None
+    seed_everything(args.seed)
 
     device = torch.device(args.device)
     if device.type == "cuda":
@@ -100,47 +94,40 @@ def main():
         torch.backends.cudnn.benchmark = True          # fixed shapes -> autotune convs once
     meta = LeRobotDatasetMetadata(args.repo_id, root=args.root)
 
-    # policy config -> load pretrained weights (smolvla_base, or --init-from checkpoint)
-    src = args.init_from or BASE
-    cfg = SmolVLAConfig(pretrained_path=src, device=args.device)
+    # One canonical runtime owns checkpoint reconstruction, processors, action
+    # semantics, strict load auditing, vocabulary coverage, and corrected loss.
+    src = Path(args.init_from) if args.init_from else BASE
+    runtime = load_runtime(
+        src,
+        meta=meta,
+        dataset_root=args.root,
+        device=device,
+        stats_source="dataset",
+        base_checkpoint=args.init_from is None,
+    )
+    policy = runtime.policy
+    preprocessor, postprocessor = runtime.preprocessor, runtime.postprocessor
+    if args.delta_actions is not None and args.delta_actions != runtime.delta_actions:
+        raise SystemExit(
+            f"--delta-actions contradicts detected {runtime.action_semantics} dataset/checkpoint semantics"
+        )
     if args.n_action_steps is not None:
-        cfg.n_action_steps = args.n_action_steps
+        policy.config.n_action_steps = args.n_action_steps
+        policy.reset()
 
     # each sample needs an action chunk of `chunk_size` future steps.
     # FastChunkDataset fixes a ~70x dataloader slowdown in the chunk query
     # (lerobot row-first fallback decodes the image column per chunk row).
-    delta_timestamps = {"action": [i / meta.fps for i in range(cfg.chunk_size)]}
-    ds = FastChunkDataset(args.repo_id, root=args.root, delta_timestamps=delta_timestamps)
-
-    policy = make_policy(cfg=cfg, ds_meta=meta)
-    policy.to(device)
-    trainable_params = set_trainable(policy, args.trainable)
-
-    # processors: reuse the base tokenizer/image pipeline, but normalize with OUR stats
-    norm_feats = {**policy.config.input_features, **policy.config.output_features}
-    preprocessor, postprocessor = make_pre_post_processors(
-        policy_cfg=cfg,
-        pretrained_path=src,
-        preprocessor_overrides={
-            "device_processor": {"device": device.type},
-            "normalizer_processor": {
-                "stats": meta.stats,
-                "features": norm_feats,
-                "norm_map": policy.config.normalization_mapping,
-            },
-        },
-        postprocessor_overrides={
-            "unnormalizer_processor": {
-                "stats": meta.stats,
-                "features": policy.config.output_features,
-                "norm_map": policy.config.normalization_mapping,
-            },
-        },
+    delta_timestamps = {"action": [i / meta.fps for i in range(policy.config.chunk_size)]}
+    ds = FastChunkDataset(
+        args.repo_id, root=args.root, episodes=episode_indices, delta_timestamps=delta_timestamps
     )
+    trainable_params = set_trainable(policy, args.trainable)
 
     dl = DataLoader(ds, batch_size=args.batch_size, shuffle=True,
                     num_workers=args.num_workers, pin_memory=(device.type == "cuda"),
-                    persistent_workers=(args.num_workers > 0), drop_last=True)
+                    persistent_workers=(args.num_workers > 0), drop_last=True,
+                    worker_init_fn=seed_worker, generator=make_generator(args.seed))
     trainable_parameters = [p for p in policy.parameters() if p.requires_grad]
     if not trainable_parameters:
         raise SystemExit(f"no trainable parameters for --trainable {args.trainable}")
@@ -164,7 +151,8 @@ def main():
     print(f"training SmolVLA ({trainable_params/1e6:.0f}M trainable params, "
           f"mode={args.trainable}) on {device} | "
           f"{meta.total_episodes} eps, {meta.total_frames} frames | "
-          f"chunk={cfg.chunk_size}, batch={args.batch_size}, steps={args.steps}")
+          f"chunk={policy.config.chunk_size}, batch={args.batch_size}, steps={args.steps}, "
+          f"seed={args.seed}, actions={runtime.action_semantics}")
 
     # bf16 autocast on CUDA (big speedup on H100; no GradScaler needed for bf16)
     amp = (torch.autocast(device_type="cuda", dtype=torch.bfloat16)
@@ -191,8 +179,11 @@ def main():
                   f"{step/dt:.2f} it/s")
             running.zero_()
         if step % args.save_every == 0 or step == args.steps:
-            save_checkpoint(policy, preprocessor, postprocessor, args.output,
-                            delta_actions=args.delta_actions)
+            save_runtime(runtime, args.output, seed=args.seed, extra_metadata={
+                "repo_id": args.repo_id, "dataset_root": str(Path(args.root).resolve()),
+                "step": step, "steps_this_run": args.steps, "init_from": args.init_from,
+                "episodes": episode_indices,
+            })
             print(f"  saved checkpoint to {args.output} (step {step})")
 
         if args.closed_loop_every and (step % args.closed_loop_every == 0 or step == args.steps):
@@ -200,14 +191,17 @@ def main():
                 policy, preprocessor, postprocessor,
                 device=device, commands=cl_commands,
                 cap=args.closed_loop_cap, seed=args.closed_loop_seed,
-                delta_actions=args.delta_actions, episodes=args.closed_loop_episodes,
+                delta_actions=runtime.delta_actions, episodes=args.closed_loop_episodes,
             )
             print(f"  step {step:5d}/{args.steps}  closed-loop {format_metrics(cl)}")
             if args.save_best_closed_loop and cl["success_rate"] > best_cl:
                 best_cl = cl["success_rate"]
                 best_path = Path(args.output) / "best_closed_loop"
-                save_checkpoint(policy, preprocessor, postprocessor, best_path,
-                                delta_actions=args.delta_actions)
+                save_runtime(runtime, best_path, seed=args.seed, extra_metadata={
+                    "repo_id": args.repo_id, "dataset_root": str(Path(args.root).resolve()),
+                    "step": step, "steps_this_run": args.steps, "init_from": args.init_from,
+                    "selection": "best_closed_loop", "episodes": episode_indices,
+                })
                 print(f"    new best closed-loop success {cl['success_rate']:.0%} -> saved {best_path}")
 
     print(f"done in {(time.time()-t0)/60:.1f} min -> {args.output}")

@@ -10,20 +10,20 @@ Run:  python3 -m tinyvla.eval --per-command 5 --film --device cuda
 from __future__ import annotations
 
 import argparse
+import json
 import os
+from pathlib import Path
 import numpy as np
 import torch
 import mujoco
 
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata  # datasets before policies
-from lerobot.policies.factory import make_policy, make_pre_post_processors
-from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
-
 from .task import SO101PickPlaceTask, COMMANDS
 from .collect import IMG, CAMERAS
 from .paths import ARTIFACTS_ROOT, CHECKPOINTS_ROOT, DATASETS_ROOT
-
-BASE = "lerobot/smolvla_base"
+from .determinism import seed_everything
+from .eval_closedloop import evaluate_closed_loop
+from .runtime import experiment_metadata, load_runtime
 
 
 def build_obs(env, renderer, device):
@@ -49,62 +49,78 @@ def main():
     ap.add_argument("--device", default="mps")
     ap.add_argument("--film", action="store_true", help="save a filmstrip montage (one row per command)")
     ap.add_argument("--seed", type=int, default=999)
+    ap.add_argument("--commands", default="0,1,2,3,4,5,6,7")
+    ap.add_argument("--delta-actions", action="store_true", default=None,
+                    help="Legacy assertion only; semantics are loaded automatically.")
+    ap.add_argument("--output", default=str(ARTIFACTS_ROOT / "evaluations" / "latest.json"))
     args = ap.parse_args()
+    commands = [int(value) for value in args.commands.split(",") if value]
+    seed_everything(args.seed)
 
     device = torch.device(args.device)
     meta = LeRobotDatasetMetadata(args.repo_id, root=args.root)
-    cfg = SmolVLAConfig(pretrained_path=args.model, device=args.device)
-    policy = make_policy(cfg=cfg, ds_meta=meta).to(device).eval()
-
-    norm_feats = {**policy.config.input_features, **policy.config.output_features}
-    preprocessor, postprocessor = make_pre_post_processors(
-        policy_cfg=cfg, pretrained_path=BASE,
-        preprocessor_overrides={
-            "device_processor": {"device": device.type},
-            "normalizer_processor": {
-                "stats": meta.stats, "features": norm_feats,
-                "norm_map": policy.config.normalization_mapping},
-        },
-        postprocessor_overrides={
-            "unnormalizer_processor": {
-                "stats": meta.stats, "features": policy.config.output_features,
-                "norm_map": policy.config.normalization_mapping},
-        },
+    runtime = load_runtime(
+        args.model, meta=meta, dataset_root=args.root, device=device, stats_source="checkpoint"
     )
+    if args.delta_actions is not None and args.delta_actions != runtime.delta_actions:
+        raise SystemExit(
+            f"--delta-actions contradicts detected {runtime.action_semantics} runtime semantics"
+        )
+    policy = runtime.policy.eval()
+    preprocessor, postprocessor = runtime.preprocessor, runtime.postprocessor
 
-    env = SO101PickPlaceTask(seed=args.seed)
-    renderer = mujoco.Renderer(env.model, height=IMG, width=IMG)
-    big = mujoco.Renderer(env.model, height=360, width=480) if args.film else None
+    metrics = evaluate_closed_loop(
+        policy,
+        preprocessor,
+        postprocessor,
+        device=device,
+        commands=commands,
+        cap=args.base_steps * 2,
+        seed=args.seed,
+        delta_actions=runtime.delta_actions,
+        episodes=args.per_command,
+    )
+    result = {
+        "model": str(args.model),
+        "dataset": {"repo_id": args.repo_id, "root": args.root},
+        "action_semantics": runtime.action_semantics,
+        "load_report": runtime.load_report,
+        "metrics": metrics,
+        "experiment": experiment_metadata(seed=args.seed),
+    }
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps(metrics, indent=2))
 
-    total_ok = total = 0
-    rows = []
-    print(f"\nclosed-loop eval | {args.per_command} episodes/command | model={args.model}\n")
-    for ci, spec in enumerate(COMMANDS):
-        horizon = args.base_steps * len(spec["steps"])
-        ok = 0
-        for ep in range(args.per_command):
+    if args.film:
+        env = SO101PickPlaceTask(seed=args.seed)
+        renderer = mujoco.Renderer(env.model, height=IMG, width=IMG)
+        big = mujoco.Renderer(env.model, height=360, width=480)
+        rows = []
+        for ci in commands:
+            spec = COMMANDS[ci]
+            horizon = args.base_steps * len(spec["steps"])
+            env.rng = np.random.default_rng(args.seed + ci)
             env.reset(command=ci)
             policy.reset()
-            grab_film = args.film and ep == 0
             film = []
             for t in range(horizon):
                 obs = preprocessor(build_obs(env, renderer, device))
                 with torch.inference_mode():
                     action = policy.select_action(obs)
                 action = postprocessor(action).squeeze(0).cpu().numpy()
+                if runtime.delta_actions:
+                    action = action + env.data.qpos[:6].astype(action.dtype)
                 env.step(action)
-                if grab_film and t % max(1, horizon // 7) == 0:
-                    big.update_scene(env.data, camera="front"); film.append(big.render())
-            ok += env.success()
-            if grab_film:
-                big.update_scene(env.data, camera="front"); film.append(big.render())
-                rows.append(np.concatenate(film, axis=1))
-        total_ok += ok; total += args.per_command
-        print(f"  [{ok}/{args.per_command}] {spec['instruction']}")
-
-    print(f"\nOVERALL closed-loop success: {total_ok}/{total} = {100*total_ok/total:.0f}%")
-
-    if rows:
+                if t % max(1, horizon // 7) == 0:
+                    big.update_scene(env.data, camera="front")
+                    film.append(big.render())
+            big.update_scene(env.data, camera="front")
+            film.append(big.render())
+            rows.append(np.concatenate(film, axis=1))
+        renderer.close()
+        big.close()
         from PIL import Image
         w = min(r.shape[1] for r in rows)
         rows = [r[:, :w] for r in rows]

@@ -15,6 +15,7 @@ import torch
 import mujoco
 
 from .task import SO101PickPlaceTask, COMMANDS
+from .determinism import preserve_rng_state
 
 IMG = 256
 DEFAULT_COMMANDS = (0, 1, 2, 3)
@@ -46,6 +47,7 @@ def evaluate_closed_loop(
     episodes: int = 1,
     stop_on_success: bool = True,
     dwell: int = 8,
+    positions_by_rollout: dict[tuple[int, int], dict[str, np.ndarray]] | None = None,
 ) -> dict:
     """Roll out `policy` on each command and return graded closed-loop metrics.
 
@@ -68,45 +70,80 @@ def evaluate_closed_loop(
     env = SO101PickPlaceTask(seed=seed)
     renderer = mujoco.Renderer(env.model, height=img, width=img)
     successes, min_dists, final_dists = [], [], []
-    try:
-        for ci in commands:
-            for ep in range(episodes):
-                rollout_seed = seed + 1009 * ep + ci
-                env.rng = np.random.default_rng(rollout_seed)
-                env.reset(command=ci)
-                policy.reset()
-                torch.manual_seed(rollout_seed)
-                dmin = float("inf")
-                hold = 0
-                for _ in range(cap):
-                    obs = preprocessor(build_obs(env, renderer, COMMANDS[ci]["instruction"], device, camera))
-                    with torch.inference_mode():
-                        action = policy.select_action(obs)
-                    action = postprocessor(action).squeeze(0).cpu().numpy()
-                    if delta_actions:
-                        action = action + env.data.qpos[:6].astype(action.dtype)
-                    env.step(action)
-                    dmin = min(dmin, float(np.linalg.norm(env.ee_pos() - env.cube_pos())))
-                    # end early once success is SUSTAINED (same dwell rule as the
-                    # data collector) — no need to burn the rest of `cap`
-                    hold = hold + 1 if env.success() else 0
-                    if stop_on_success and hold >= dwell:
-                        break
-                successes.append(int(env.success()))
-                min_dists.append(dmin)
-                final_dists.append(float(np.linalg.norm(env.ee_pos() - env.cube_pos())))
-    finally:
-        renderer.close()
-        if was_training:
-            policy.train()
+    per_command_raw: dict[int, dict[str, list[float]]] = {
+        int(ci): {"successes": [], "min_dists": [], "final_dists": []} for ci in commands
+    }
+    with preserve_rng_state():
+        try:
+            for ci in commands:
+                for ep in range(episodes):
+                    rollout_seed = seed + 1009 * ep + ci
+                    env.rng = np.random.default_rng(rollout_seed)
+                    positions = (positions_by_rollout or {}).get((int(ci), ep))
+                    env.reset(command=ci, positions=positions)
+                    policy.reset()
+                    torch.manual_seed(rollout_seed)
+                    dmin = float("inf")
+                    hold = 0
+                    for _ in range(cap):
+                        obs = preprocessor(build_obs(env, renderer, COMMANDS[ci]["instruction"], device, camera))
+                        with torch.inference_mode():
+                            action = policy.select_action(obs)
+                        action = postprocessor(action).squeeze(0).cpu().numpy()
+                        if delta_actions:
+                            action = action + env.data.qpos[:6].astype(action.dtype)
+                        env.step(action)
+                        dmin = min(dmin, float(np.linalg.norm(env.ee_pos() - env.cube_pos())))
+                        hold = hold + 1 if env.success() else 0
+                        if stop_on_success and hold >= dwell:
+                            break
+                    succeeded = int(env.success())
+                    final_dist = float(np.linalg.norm(env.ee_pos() - env.cube_pos()))
+                    successes.append(succeeded)
+                    min_dists.append(dmin)
+                    final_dists.append(final_dist)
+                    row = per_command_raw[int(ci)]
+                    row["successes"].append(succeeded)
+                    row["min_dists"].append(dmin)
+                    row["final_dists"].append(final_dist)
+        finally:
+            renderer.close()
+            policy.reset()
+            if was_training:
+                policy.train()
     n = len(commands) * episodes
-    return {
+    per_command = {
+        str(ci): {
+            "instruction": COMMANDS[ci]["instruction"],
+            "n": len(values["successes"]),
+            "successes": int(np.sum(values["successes"])),
+            "success_rate": float(np.mean(values["successes"])) if values["successes"] else 0.0,
+            "mean_min_dist": float(np.mean(values["min_dists"])) if values["min_dists"] else None,
+            "mean_final_dist": float(np.mean(values["final_dists"])) if values["final_dists"] else None,
+        }
+        for ci, values in per_command_raw.items()
+    }
+    result = {
         "n": n,
         "successes": int(np.sum(successes)),
         "success_rate": float(np.mean(successes)) if n else 0.0,
         "mean_min_dist": float(np.mean(min_dists)) if n else None,
         "mean_final_dist": float(np.mean(final_dists)) if n else None,
+        "per_command": per_command,
     }
+    groups = {"single_step_0_3": (0, 1, 2, 3), "stacking_4_5": (4, 5), "two_step_6_7": (6, 7)}
+    result["groups"] = {}
+    for name, members in groups.items():
+        rows = [per_command[str(ci)] for ci in members if str(ci) in per_command]
+        if rows:
+            group_n = sum(row["n"] for row in rows)
+            group_successes = sum(row["successes"] for row in rows)
+            result["groups"][name] = {
+                "n": group_n,
+                "successes": group_successes,
+                "success_rate": group_successes / group_n if group_n else 0.0,
+            }
+    return result
 
 
 def evaluate_per_command(policy, preprocessor, postprocessor, *, device,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
@@ -100,11 +101,13 @@ def _feature_from_json(value: dict) -> PolicyFeature:
     return PolicyFeature(type=FeatureType(value["type"]), shape=tuple(value["shape"]))
 
 
-def _config_from_json(pretrained_path: Path) -> SmolVLAConfig:
+def _config_from_json(pretrained_path: Path, *, device: str | torch.device | None = None) -> SmolVLAConfig:
     with (pretrained_path / "config.json").open() as f:
         data = json.load(f)
 
     data.pop("type", None)
+    if device is not None:
+        data["device"] = str(device)
     for feature_key in ("input_features", "output_features"):
         if data.get(feature_key) is not None:
             data[feature_key] = {
@@ -142,7 +145,10 @@ def load_pruned_smolvla(
     *,
     device: str | torch.device | None = None,
     config_overrides: dict[str, Any] | None = None,
-    strict: bool = False,
+    strict: bool = True,
+    allowed_missing: tuple[str, ...] = (),
+    allowed_unexpected: tuple[str, ...] = (),
+    report_path: str | Path | None = None,
 ) -> SmolVLAPolicy:
     """Load a SmolVLA checkpoint pruned by scripts/prune_smolvla.py.
 
@@ -155,7 +161,7 @@ def load_pruned_smolvla(
     model_file = pretrained_path / "model.safetensors"
     remap_file = pretrained_path / "vocab_remap.json"
 
-    cfg = _config_from_json(pretrained_path)
+    cfg = _config_from_json(pretrained_path, device=device)
     pruning_meta = _pruning_meta(pretrained_path)
     for key, value in (config_overrides or {}).items():
         setattr(cfg, key, value)
@@ -200,6 +206,7 @@ def load_pruned_smolvla(
 
     with safe_open(str(model_file), framework="pt", device="cpu") as tensors:
         keys = set(tensors.keys())
+        saved_shapes = {key: tuple(tensors.get_slice(key).get_shape()) for key in keys}
 
     if remap_file.exists():
         _replace_embedding(policy, model_file, remap_file)
@@ -207,9 +214,73 @@ def load_pruned_smolvla(
     if LM_HEAD_KEY not in keys:
         policy.model.vlm_with_expert.vlm.lm_head = None
 
-    missing, unexpected = load_model(policy, str(model_file), strict=strict, device=str(cfg.device))
-    if strict and (missing or unexpected):
-        raise RuntimeError(f"strict load failed: missing={missing}, unexpected={unexpected}")
+    runtime_shapes = {key: tuple(value.shape) for key, value in policy.state_dict().items()}
+    shape_mismatches = {
+        key: {"runtime": runtime_shapes[key], "checkpoint": saved_shapes[key]}
+        for key in sorted(set(runtime_shapes) & keys)
+        if runtime_shapes[key] != saved_shapes[key]
+    }
+    if shape_mismatches:
+        pre_missing = sorted(set(runtime_shapes) - keys)
+        pre_unexpected = sorted(keys - set(runtime_shapes))
+        report = {
+            "checkpoint": str(pretrained_path.resolve()),
+            "model_file": str(model_file.resolve()),
+            "strict": strict,
+            "checkpoint_tensor_count": len(keys),
+            "runtime_tensor_count": len(runtime_shapes),
+            "missing": pre_missing,
+            "unexpected": pre_unexpected,
+            "shape_mismatches": shape_mismatches,
+            "allowed_missing": list(allowed_missing),
+            "allowed_unexpected": list(allowed_unexpected),
+            "unexplained_missing": [
+                key for key in pre_missing if not any(fnmatch(key, pat) for pat in allowed_missing)
+            ],
+            "unexplained_unexpected": [
+                key for key in pre_unexpected if not any(fnmatch(key, pat) for pat in allowed_unexpected)
+            ],
+            "ok": False,
+        }
+        destination = Path(report_path) if report_path is not None else pretrained_path / "load_report.json"
+        destination.write_text(json.dumps(report, indent=2) + "\n")
+        print(json.dumps({"smolvla_load_report": report}, indent=2))
+        raise RuntimeError(f"pruned checkpoint shape audit failed; report={destination}")
+
+    # Always ask safetensors for the complete key report. We enforce strictness
+    # ourselves so explicitly allowlisted structural removals remain auditable.
+    missing, unexpected = load_model(policy, str(model_file), strict=False, device=str(cfg.device))
+    missing = sorted(missing)
+    unexpected = sorted(unexpected)
+    unexplained_missing = [key for key in missing if not any(fnmatch(key, pat) for pat in allowed_missing)]
+    unexplained_unexpected = [
+        key for key in unexpected if not any(fnmatch(key, pat) for pat in allowed_unexpected)
+    ]
+    report = {
+        "checkpoint": str(pretrained_path.resolve()),
+        "model_file": str(model_file.resolve()),
+        "strict": strict,
+        "checkpoint_tensor_count": len(keys),
+        "runtime_tensor_count": len(policy.state_dict()),
+        "missing": missing,
+        "unexpected": unexpected,
+        "shape_mismatches": {},
+        "allowed_missing": list(allowed_missing),
+        "allowed_unexpected": list(allowed_unexpected),
+        "unexplained_missing": unexplained_missing,
+        "unexplained_unexpected": unexplained_unexpected,
+        "ok": not unexplained_missing and not unexplained_unexpected,
+    }
+    destination = Path(report_path) if report_path is not None else pretrained_path / "load_report.json"
+    destination.write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps({"smolvla_load_report": report}, indent=2))
+    policy._tinyvla_load_report = report
+    if strict and not report["ok"]:
+        raise RuntimeError(
+            "pruned checkpoint tensor audit failed; "
+            f"unexplained_missing={unexplained_missing}, "
+            f"unexplained_unexpected={unexplained_unexpected}; report={destination}"
+        )
 
     policy.to(cfg.device)
     policy.eval()
