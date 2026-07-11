@@ -1,0 +1,373 @@
+{
+  "condition": "privileged_grasp",
+  "note": "UPPER BOUND: state includes privileged grasped bit (sim-only). Original Experiment I (transfer) + II (on-policy DAgger) schema.",
+  "cnn_params": 89318,
+  "img_net": 84,
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "state_note": "grasped flag is privileged (1 bit not visible in a single frame)",
+  "experiment_I_transfer": {
+    "0": {
+      "train_size": 1817,
+      "train_s": 54.2,
+      "memorized": {
+        "success": 3,
+        "n": 4,
+        "grasp": 4,
+        "lift": 4,
+        "carry": 4
+      },
+      "held_out": {
+        "success": 5,
+        "n": 20,
+        "grasp": 20,
+        "lift": 6,
+        "carry": 6
+      }
+    },
+    "1": {
+      "train_size": 2195,
+      "train_s": 51.0,
+      "memorized": {
+        "success": 4,
+        "n": 4,
+        "grasp": 4,
+        "lift": 4,
+        "carry": 4
+      },
+      "held_out": {
+        "success": 8,
+        "n": 20,
+        "grasp": 19,
+        "lift": 13,
+        "carry": 13
+      }
+    },
+    "2": {
+      "train_size": 2058,
+      "train_s": 69.0,
+      "memorized": {
+        "success": 3,
+        "n": 4,
+        "grasp": 4,
+        "lift": 3,
+        "carry": 3
+      },
+      "held_out": {
+        "success": 5,
+        "n": 20,
+        "grasp": 16,
+        "lift": 6,
+        "carry": 6
+      }
+    }
+  },
+  "experiment_II_cnn_dagger": {
+    "0": {
+      "curve": [
+        {
+          "round": 0,
+          "train_size": 204,
+          "new_states": 800,
+          "success": 0,
+          "n": 4,
+          "grasp": 4,
+          "lift": 3,
+          "carry": 0,
+          "takeover": {
+            "approach": 1.0,
+            "near_grasp": null,
+            "lift": 1.0,
+            "carry": 1.0,
+            "dest_approach": null,
+            "release": null
+          }
+        },
+        {
+          "round": 1,
+          "train_size": 1004,
+          "new_states": 800,
+          "success": 1,
+          "n": 4,
+          "grasp": 3,
+          "lift": 3,
+          "carry": 2,
+          "takeover": {
+            "approach": 1.0,
+            "near_grasp": 1.0,
+            "lift": 1.0,
+            "carry": 1.0,
+            "dest_approach": 1.0,
+            "release": null
+          }
+        },
+        {
+          "round": 2,
+          "train_size": 1485,
+          "new_states": 800,
+          "success": 3,
+          "n": 4,
+          "grasp": 4,
+          "lift": 3,
+          "carry": 3,
+          "takeover": {
+            "approach": 1.0,
+            "near_grasp": 1.0,
+            "lift": 1.0,
+            "carry": 1.0,
+            "dest_approach": 1.0,
+            "release": null
+          }
+        },
+        {
+          "round": 3,
+          "train_size": 1784,
+          "new_states": 800,
+          "success": 4,
+          "n": 4,
+          "grasp": 4,
+          "lift": 4,
+          "carry": 4,
+          "takeover": {
+            "approach": 1.0,
+            "near_grasp": 1.0,
+            "lift": 1.0,
+            "carry": 1.0,
+            "dest_approach": 1.0,
+            "release": null
+          }
+        },
+        {
+          "round": 4,
+          "train_size": 1896,
+          "new_states": 800,
+          "success": 3,
+          "n": 4,
+          "grasp": 4,
+          "lift": 4,
+          "carry": 4,
+          "takeover": {
+            "approach": 1.0,
+            "near_grasp": 1.0,
+            "lift": 1.0,
+            "carry": 1.0,
+            "dest_approach": 1.0,
+            "release": 1.0
+          }
+        }
+      ],
+      "held_out": {
+        "success": 9,
+        "n": 20,
+        "grasp": 18,
+        "lift": 13,
+        "carry": 13
+      }
+    },
+    "1": {
+      "curve": [
+        {
+          "round": 0,
+          "train_size": 204,
+          "new_states": 800,
+          "success": 0,
+          "n": 4,
+          "grasp": 0,
+          "lift": 0,
+          "carry": 0,
+          "takeover": {
+            "approach": 0.94,
+            "near_grasp": null,
+            "lift": null,
+            "carry": null,
+            "dest_approach": null,
+            "release": null
+          }
+        },
+        {
+          "round": 1,
+          "train_size": 677,
+          "new_states": 800,
+          "success": 0,
+          "n": 4,
+          "grasp": 4,
+          "lift": 2,
+          "carry": 2,
+          "takeover": {
+            "approach": 1.0,
+            "near_grasp": null,
+            "lift": 1.0,
+            "carry": null,
+            "dest_approach": null,
+            "release": null
+          }
+        },
+        {
+          "round": 2,
+          "train_size": 742,
+          "new_states": 800,
+          "success": 2,
+          "n": 4,
+          "grasp": 3,
+          "lift": 2,
+          "carry": 3,
+          "takeover": {
+            "approach": 1.0,
+            "near_grasp": 1.0,
+            "lift": 1.0,
+            "carry": 1.0,
+            "dest_approach": null,
+            "release": 1.0
+          }
+        },
+        {
+          "round": 3,
+          "train_size": 901,
+          "new_states": 800,
+          "success": 1,
+          "n": 4,
+          "grasp": 4,
+          "lift": 3,
+          "carry": 3,
+          "takeover": {
+            "approach": 1.0,
+            "near_grasp": 1.0,
+            "lift": 1.0,
+            "carry": 1.0,
+            "dest_approach": 1.0,
+            "release": null
+          }
+        },
+        {
+          "round": 4,
+          "train_size": 1192,
+          "new_states": 800,
+          "success": 3,
+          "n": 4,
+          "grasp": 4,
+          "lift": 4,
+          "carry": 4,
+          "takeover": {
+            "approach": 1.0,
+            "near_grasp": 1.0,
+            "lift": 1.0,
+            "carry": 1.0,
+            "dest_approach": 1.0,
+            "release": null
+          }
+        }
+      ],
+      "held_out": {
+        "success": 8,
+        "n": 20,
+        "grasp": 19,
+        "lift": 9,
+        "carry": 10
+      }
+    },
+    "2": {
+      "curve": [
+        {
+          "round": 0,
+          "train_size": 204,
+          "new_states": 800,
+          "success": 0,
+          "n": 4,
+          "grasp": 0,
+          "lift": 0,
+          "carry": 0,
+          "takeover": {
+            "approach": 0.94,
+            "near_grasp": null,
+            "lift": null,
+            "carry": null,
+            "dest_approach": null,
+            "release": null
+          }
+        },
+        {
+          "round": 1,
+          "train_size": 675,
+          "new_states": 800,
+          "success": 0,
+          "n": 4,
+          "grasp": 4,
+          "lift": 2,
+          "carry": 1,
+          "takeover": {
+            "approach": 1.0,
+            "near_grasp": 1.0,
+            "lift": 1.0,
+            "carry": 1.0,
+            "dest_approach": null,
+            "release": null
+          }
+        },
+        {
+          "round": 2,
+          "train_size": 736,
+          "new_states": 800,
+          "success": 3,
+          "n": 4,
+          "grasp": 4,
+          "lift": 4,
+          "carry": 4,
+          "takeover": {
+            "approach": 1.0,
+            "near_grasp": 1.0,
+            "lift": 1.0,
+            "carry": 1.0,
+            "dest_approach": 1.0,
+            "release": 1.0
+          }
+        },
+        {
+          "round": 3,
+          "train_size": 975,
+          "new_states": 800,
+          "success": 1,
+          "n": 4,
+          "grasp": 4,
+          "lift": 4,
+          "carry": 4,
+          "takeover": {
+            "approach": 0.94,
+            "near_grasp": 1.0,
+            "lift": 1.0,
+            "carry": 1.0,
+            "dest_approach": null,
+            "release": null
+          }
+        },
+        {
+          "round": 4,
+          "train_size": 1229,
+          "new_states": 800,
+          "success": 2,
+          "n": 4,
+          "grasp": 4,
+          "lift": 3,
+          "carry": 2,
+          "takeover": {
+            "approach": 1.0,
+            "near_grasp": 1.0,
+            "lift": 1.0,
+            "carry": 1.0,
+            "dest_approach": 1.0,
+            "release": null
+          }
+        }
+      ],
+      "held_out": {
+        "success": 4,
+        "n": 20,
+        "grasp": 12,
+        "lift": 6,
+        "carry": 4
+      }
+    }
+  }
+}

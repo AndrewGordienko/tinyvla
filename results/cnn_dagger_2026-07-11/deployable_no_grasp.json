@@ -1,0 +1,2404 @@
+{
+  "condition": "deployable_no_grasp",
+  "cnn_params": 89190,
+  "img_net": 84,
+  "state_dim": 18,
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "held_out": 20,
+  "state_composition": "qpos6+qvel6+prev6",
+  "demo_images": 204,
+  "perturbation_images": 1836,
+  "controls": {
+    "demos_only": {
+      "0": {
+        "memorized": {
+          "n": 4,
+          "success": 0,
+          "grasp": 4,
+          "lift": 1,
+          "carry": 2,
+          "fail_stages": {
+            "grasp": 3,
+            "place": 1
+          }
+        },
+        "held_out": {
+          "n": 20,
+          "success": 0,
+          "grasp": 18,
+          "lift": 4,
+          "carry": 10,
+          "fail_stages": {
+            "grasp": 14,
+            "place": 4,
+            "approach": 2
+          },
+          "by_distance": {
+            "<0.05": {
+              "n": 15,
+              "success": 0
+            },
+            "0.05-0.1": {
+              "n": 5,
+              "success": 0
+            },
+            "0.1-0.2": {
+              "n": 0,
+              "success": 0
+            },
+            ">=0.2": {
+              "n": 0,
+              "success": 0
+            }
+          },
+          "per_scene": [
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0162,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0569
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 1,
+              "min_dist": 0.0378,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0186
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0365,
+              "fail_stage": "place",
+              "layout_dist": 0.0253
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0118,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0292
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0379,
+              "fail_stage": "place",
+              "layout_dist": 0.0445
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 1,
+              "min_dist": 0.0346,
+              "fail_stage": "grasp",
+              "layout_dist": 0.051
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0369,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0337
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 1,
+              "min_dist": 0.0389,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0404
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0609,
+              "fail_stage": "approach",
+              "layout_dist": 0.054
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0441,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0457
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 1,
+              "min_dist": 0.0383,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0287
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 1,
+              "min_dist": 0.0365,
+              "fail_stage": "grasp",
+              "layout_dist": 0.038
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 1,
+              "min_dist": 0.0373,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0578
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.054,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0277
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0186,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0299
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0194,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0316
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0501,
+              "fail_stage": "approach",
+              "layout_dist": 0.0467
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0384,
+              "fail_stage": "place",
+              "layout_dist": 0.0567
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0379,
+              "fail_stage": "place",
+              "layout_dist": 0.0402
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0164,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0271
+            }
+          ]
+        }
+      },
+      "1": {
+        "memorized": {
+          "n": 4,
+          "success": 0,
+          "grasp": 4,
+          "lift": 2,
+          "carry": 2,
+          "fail_stages": {
+            "grasp": 2,
+            "place": 2
+          }
+        },
+        "held_out": {
+          "n": 20,
+          "success": 0,
+          "grasp": 20,
+          "lift": 12,
+          "carry": 9,
+          "fail_stages": {
+            "grasp": 8,
+            "place": 9,
+            "carry": 3
+          },
+          "by_distance": {
+            "<0.05": {
+              "n": 15,
+              "success": 0
+            },
+            "0.05-0.1": {
+              "n": 5,
+              "success": 0
+            },
+            "0.1-0.2": {
+              "n": 0,
+              "success": 0
+            },
+            ">=0.2": {
+              "n": 0,
+              "success": 0
+            }
+          },
+          "per_scene": [
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.032,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0569
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0388,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0186
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0366,
+              "fail_stage": "place",
+              "layout_dist": 0.0253
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0373,
+              "fail_stage": "place",
+              "layout_dist": 0.0292
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0536,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0445
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 0,
+              "min_dist": 0.0355,
+              "fail_stage": "carry",
+              "layout_dist": 0.051
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 0,
+              "min_dist": 0.0346,
+              "fail_stage": "carry",
+              "layout_dist": 0.0337
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0561,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0404
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0345,
+              "fail_stage": "place",
+              "layout_dist": 0.054
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0356,
+              "fail_stage": "place",
+              "layout_dist": 0.0457
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0375,
+              "fail_stage": "place",
+              "layout_dist": 0.0287
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.032,
+              "fail_stage": "grasp",
+              "layout_dist": 0.038
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0278,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0578
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0292,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0277
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0247,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0299
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0357,
+              "fail_stage": "place",
+              "layout_dist": 0.0316
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 0,
+              "min_dist": 0.0373,
+              "fail_stage": "carry",
+              "layout_dist": 0.0467
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0367,
+              "fail_stage": "place",
+              "layout_dist": 0.0567
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0348,
+              "fail_stage": "place",
+              "layout_dist": 0.0402
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0375,
+              "fail_stage": "place",
+              "layout_dist": 0.0271
+            }
+          ]
+        }
+      },
+      "2": {
+        "memorized": {
+          "n": 4,
+          "success": 0,
+          "grasp": 0,
+          "lift": 0,
+          "carry": 0,
+          "fail_stages": {
+            "approach": 4
+          }
+        },
+        "held_out": {
+          "n": 20,
+          "success": 0,
+          "grasp": 3,
+          "lift": 0,
+          "carry": 3,
+          "fail_stages": {
+            "approach": 17,
+            "grasp": 3
+          },
+          "by_distance": {
+            "<0.05": {
+              "n": 15,
+              "success": 0
+            },
+            "0.05-0.1": {
+              "n": 5,
+              "success": 0
+            },
+            "0.1-0.2": {
+              "n": 0,
+              "success": 0
+            },
+            ">=0.2": {
+              "n": 0,
+              "success": 0
+            }
+          },
+          "per_scene": [
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0651,
+              "fail_stage": "approach",
+              "layout_dist": 0.0569
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0694,
+              "fail_stage": "approach",
+              "layout_dist": 0.0186
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0806,
+              "fail_stage": "approach",
+              "layout_dist": 0.0253
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0437,
+              "fail_stage": "approach",
+              "layout_dist": 0.0292
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0804,
+              "fail_stage": "approach",
+              "layout_dist": 0.0445
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 1,
+              "min_dist": 0.0385,
+              "fail_stage": "grasp",
+              "layout_dist": 0.051
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0549,
+              "fail_stage": "approach",
+              "layout_dist": 0.0337
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0999,
+              "fail_stage": "approach",
+              "layout_dist": 0.0404
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0564,
+              "fail_stage": "approach",
+              "layout_dist": 0.054
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 1,
+              "min_dist": 0.0386,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0457
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0431,
+              "fail_stage": "approach",
+              "layout_dist": 0.0287
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0739,
+              "fail_stage": "approach",
+              "layout_dist": 0.038
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0463,
+              "fail_stage": "approach",
+              "layout_dist": 0.0578
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0428,
+              "fail_stage": "approach",
+              "layout_dist": 0.0277
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0479,
+              "fail_stage": "approach",
+              "layout_dist": 0.0299
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0496,
+              "fail_stage": "approach",
+              "layout_dist": 0.0316
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 1,
+              "min_dist": 0.0353,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0467
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0662,
+              "fail_stage": "approach",
+              "layout_dist": 0.0567
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0647,
+              "fail_stage": "approach",
+              "layout_dist": 0.0402
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0516,
+              "fail_stage": "approach",
+              "layout_dist": 0.0271
+            }
+          ]
+        }
+      }
+    },
+    "perturbation": {
+      "0": {
+        "memorized": {
+          "n": 4,
+          "success": 0,
+          "grasp": 0,
+          "lift": 0,
+          "carry": 0,
+          "fail_stages": {
+            "approach": 4
+          }
+        },
+        "held_out": {
+          "n": 20,
+          "success": 0,
+          "grasp": 2,
+          "lift": 1,
+          "carry": 0,
+          "fail_stages": {
+            "approach": 18,
+            "grasp": 1,
+            "carry": 1
+          },
+          "by_distance": {
+            "<0.05": {
+              "n": 15,
+              "success": 0
+            },
+            "0.05-0.1": {
+              "n": 5,
+              "success": 0
+            },
+            "0.1-0.2": {
+              "n": 0,
+              "success": 0
+            },
+            ">=0.2": {
+              "n": 0,
+              "success": 0
+            }
+          },
+          "per_scene": [
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0828,
+              "fail_stage": "approach",
+              "layout_dist": 0.0569
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0731,
+              "fail_stage": "approach",
+              "layout_dist": 0.0186
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0922,
+              "fail_stage": "approach",
+              "layout_dist": 0.0253
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0273,
+              "fail_stage": "approach",
+              "layout_dist": 0.0292
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.1121,
+              "fail_stage": "approach",
+              "layout_dist": 0.0445
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0718,
+              "fail_stage": "approach",
+              "layout_dist": 0.051
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0618,
+              "fail_stage": "approach",
+              "layout_dist": 0.0337
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.1,
+              "fail_stage": "approach",
+              "layout_dist": 0.0404
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0581,
+              "fail_stage": "approach",
+              "layout_dist": 0.054
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0622,
+              "fail_stage": "approach",
+              "layout_dist": 0.0457
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0803,
+              "fail_stage": "approach",
+              "layout_dist": 0.0287
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.085,
+              "fail_stage": "approach",
+              "layout_dist": 0.038
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.1104,
+              "fail_stage": "approach",
+              "layout_dist": 0.0578
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0793,
+              "fail_stage": "approach",
+              "layout_dist": 0.0277
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0844,
+              "fail_stage": "approach",
+              "layout_dist": 0.0299
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0931,
+              "fail_stage": "approach",
+              "layout_dist": 0.0316
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0602,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0467
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0734,
+              "fail_stage": "approach",
+              "layout_dist": 0.0567
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0448,
+              "fail_stage": "approach",
+              "layout_dist": 0.0402
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 0,
+              "min_dist": 0.0285,
+              "fail_stage": "carry",
+              "layout_dist": 0.0271
+            }
+          ]
+        }
+      },
+      "1": {
+        "memorized": {
+          "n": 4,
+          "success": 0,
+          "grasp": 0,
+          "lift": 0,
+          "carry": 0,
+          "fail_stages": {
+            "approach": 4
+          }
+        },
+        "held_out": {
+          "n": 20,
+          "success": 0,
+          "grasp": 4,
+          "lift": 3,
+          "carry": 3,
+          "fail_stages": {
+            "approach": 16,
+            "place": 3,
+            "grasp": 1
+          },
+          "by_distance": {
+            "<0.05": {
+              "n": 15,
+              "success": 0
+            },
+            "0.05-0.1": {
+              "n": 5,
+              "success": 0
+            },
+            "0.1-0.2": {
+              "n": 0,
+              "success": 0
+            },
+            ">=0.2": {
+              "n": 0,
+              "success": 0
+            }
+          },
+          "per_scene": [
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0767,
+              "fail_stage": "approach",
+              "layout_dist": 0.0569
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0452,
+              "fail_stage": "approach",
+              "layout_dist": 0.0186
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0769,
+              "fail_stage": "approach",
+              "layout_dist": 0.0253
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0967,
+              "fail_stage": "approach",
+              "layout_dist": 0.0292
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0693,
+              "fail_stage": "approach",
+              "layout_dist": 0.0445
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0383,
+              "fail_stage": "place",
+              "layout_dist": 0.051
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.019,
+              "fail_stage": "place",
+              "layout_dist": 0.0337
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0999,
+              "fail_stage": "approach",
+              "layout_dist": 0.0404
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0707,
+              "fail_stage": "approach",
+              "layout_dist": 0.054
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.02,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0457
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0578,
+              "fail_stage": "approach",
+              "layout_dist": 0.0287
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0749,
+              "fail_stage": "approach",
+              "layout_dist": 0.038
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.055,
+              "fail_stage": "approach",
+              "layout_dist": 0.0578
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.063,
+              "fail_stage": "approach",
+              "layout_dist": 0.0277
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0375,
+              "fail_stage": "place",
+              "layout_dist": 0.0299
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.082,
+              "fail_stage": "approach",
+              "layout_dist": 0.0316
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0641,
+              "fail_stage": "approach",
+              "layout_dist": 0.0467
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0655,
+              "fail_stage": "approach",
+              "layout_dist": 0.0567
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0692,
+              "fail_stage": "approach",
+              "layout_dist": 0.0402
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0791,
+              "fail_stage": "approach",
+              "layout_dist": 0.0271
+            }
+          ]
+        }
+      },
+      "2": {
+        "memorized": {
+          "n": 4,
+          "success": 0,
+          "grasp": 1,
+          "lift": 0,
+          "carry": 0,
+          "fail_stages": {
+            "approach": 3,
+            "grasp": 1
+          }
+        },
+        "held_out": {
+          "n": 20,
+          "success": 0,
+          "grasp": 3,
+          "lift": 0,
+          "carry": 1,
+          "fail_stages": {
+            "approach": 17,
+            "grasp": 3
+          },
+          "by_distance": {
+            "<0.05": {
+              "n": 15,
+              "success": 0
+            },
+            "0.05-0.1": {
+              "n": 5,
+              "success": 0
+            },
+            "0.1-0.2": {
+              "n": 0,
+              "success": 0
+            },
+            ">=0.2": {
+              "n": 0,
+              "success": 0
+            }
+          },
+          "per_scene": [
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0708,
+              "fail_stage": "approach",
+              "layout_dist": 0.0569
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0443,
+              "fail_stage": "approach",
+              "layout_dist": 0.0186
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0687,
+              "fail_stage": "approach",
+              "layout_dist": 0.0253
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0371,
+              "fail_stage": "approach",
+              "layout_dist": 0.0292
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0551,
+              "fail_stage": "approach",
+              "layout_dist": 0.0445
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0523,
+              "fail_stage": "approach",
+              "layout_dist": 0.051
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0795,
+              "fail_stage": "approach",
+              "layout_dist": 0.0337
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0879,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0404
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0638,
+              "fail_stage": "approach",
+              "layout_dist": 0.054
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0626,
+              "fail_stage": "approach",
+              "layout_dist": 0.0457
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0643,
+              "fail_stage": "approach",
+              "layout_dist": 0.0287
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0759,
+              "fail_stage": "approach",
+              "layout_dist": 0.038
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0308,
+              "fail_stage": "approach",
+              "layout_dist": 0.0578
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0461,
+              "fail_stage": "approach",
+              "layout_dist": 0.0277
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0652,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0299
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 1,
+              "min_dist": 0.0382,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0316
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0499,
+              "fail_stage": "approach",
+              "layout_dist": 0.0467
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0551,
+              "fail_stage": "approach",
+              "layout_dist": 0.0567
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0483,
+              "fail_stage": "approach",
+              "layout_dist": 0.0402
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0435,
+              "fail_stage": "approach",
+              "layout_dist": 0.0271
+            }
+          ]
+        }
+      }
+    },
+    "dagger": {
+      "0": {
+        "memorized": {
+          "n": 4,
+          "success": 1,
+          "grasp": 4,
+          "lift": 4,
+          "carry": 4,
+          "fail_stages": {
+            "place": 3
+          }
+        },
+        "held_out": {
+          "n": 20,
+          "success": 2,
+          "grasp": 8,
+          "lift": 4,
+          "carry": 3,
+          "fail_stages": {
+            "grasp": 4,
+            "approach": 12,
+            "place": 1,
+            "carry": 1
+          },
+          "by_distance": {
+            "<0.05": {
+              "n": 15,
+              "success": 2
+            },
+            "0.05-0.1": {
+              "n": 5,
+              "success": 0
+            },
+            "0.1-0.2": {
+              "n": 0,
+              "success": 0
+            },
+            ">=0.2": {
+              "n": 0,
+              "success": 0
+            }
+          },
+          "per_scene": [
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.037,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0569
+            },
+            {
+              "success": 1,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0263,
+              "fail_stage": null,
+              "layout_dist": 0.0186
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.1125,
+              "fail_stage": "approach",
+              "layout_dist": 0.0253
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.1251,
+              "fail_stage": "approach",
+              "layout_dist": 0.0292
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0815,
+              "fail_stage": "approach",
+              "layout_dist": 0.0445
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.071,
+              "fail_stage": "approach",
+              "layout_dist": 0.051
+            },
+            {
+              "success": 1,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0146,
+              "fail_stage": null,
+              "layout_dist": 0.0337
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0396,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0404
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0913,
+              "fail_stage": "approach",
+              "layout_dist": 0.054
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0322,
+              "fail_stage": "place",
+              "layout_dist": 0.0457
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 0,
+              "min_dist": 0.0114,
+              "fail_stage": "carry",
+              "layout_dist": 0.0287
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.1296,
+              "fail_stage": "approach",
+              "layout_dist": 0.038
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0503,
+              "fail_stage": "approach",
+              "layout_dist": 0.0578
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0999,
+              "fail_stage": "approach",
+              "layout_dist": 0.0277
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0583,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0299
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0725,
+              "fail_stage": "approach",
+              "layout_dist": 0.0316
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0741,
+              "fail_stage": "approach",
+              "layout_dist": 0.0467
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.063,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0567
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0827,
+              "fail_stage": "approach",
+              "layout_dist": 0.0402
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0985,
+              "fail_stage": "approach",
+              "layout_dist": 0.0271
+            }
+          ]
+        }
+      },
+      "1": {
+        "memorized": {
+          "n": 4,
+          "success": 1,
+          "grasp": 3,
+          "lift": 1,
+          "carry": 1,
+          "fail_stages": {
+            "grasp": 2,
+            "approach": 1
+          }
+        },
+        "held_out": {
+          "n": 20,
+          "success": 1,
+          "grasp": 7,
+          "lift": 4,
+          "carry": 3,
+          "fail_stages": {
+            "carry": 1,
+            "approach": 13,
+            "grasp": 3,
+            "place": 2
+          },
+          "by_distance": {
+            "<0.05": {
+              "n": 15,
+              "success": 1
+            },
+            "0.05-0.1": {
+              "n": 5,
+              "success": 0
+            },
+            "0.1-0.2": {
+              "n": 0,
+              "success": 0
+            },
+            ">=0.2": {
+              "n": 0,
+              "success": 0
+            }
+          },
+          "per_scene": [
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 0,
+              "min_dist": 0.0309,
+              "fail_stage": "carry",
+              "layout_dist": 0.0569
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0742,
+              "fail_stage": "approach",
+              "layout_dist": 0.0186
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.1012,
+              "fail_stage": "approach",
+              "layout_dist": 0.0253
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.1142,
+              "fail_stage": "approach",
+              "layout_dist": 0.0292
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0609,
+              "fail_stage": "approach",
+              "layout_dist": 0.0445
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0598,
+              "fail_stage": "approach",
+              "layout_dist": 0.051
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.1007,
+              "fail_stage": "approach",
+              "layout_dist": 0.0337
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.048,
+              "fail_stage": "approach",
+              "layout_dist": 0.0404
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0549,
+              "fail_stage": "approach",
+              "layout_dist": 0.054
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0192,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0457
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.083,
+              "fail_stage": "approach",
+              "layout_dist": 0.0287
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.1181,
+              "fail_stage": "approach",
+              "layout_dist": 0.038
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0733,
+              "fail_stage": "approach",
+              "layout_dist": 0.0578
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0252,
+              "fail_stage": "place",
+              "layout_dist": 0.0277
+            },
+            {
+              "success": 1,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0265,
+              "fail_stage": null,
+              "layout_dist": 0.0299
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.019,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0316
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0124,
+              "fail_stage": "place",
+              "layout_dist": 0.0467
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0351,
+              "fail_stage": "approach",
+              "layout_dist": 0.0567
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0479,
+              "fail_stage": "approach",
+              "layout_dist": 0.0402
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0759,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0271
+            }
+          ]
+        }
+      },
+      "2": {
+        "memorized": {
+          "n": 4,
+          "success": 1,
+          "grasp": 2,
+          "lift": 2,
+          "carry": 2,
+          "fail_stages": {
+            "approach": 2,
+            "place": 1
+          }
+        },
+        "held_out": {
+          "n": 20,
+          "success": 3,
+          "grasp": 12,
+          "lift": 5,
+          "carry": 5,
+          "fail_stages": {
+            "grasp": 7,
+            "approach": 8,
+            "place": 2
+          },
+          "by_distance": {
+            "<0.05": {
+              "n": 15,
+              "success": 2
+            },
+            "0.05-0.1": {
+              "n": 5,
+              "success": 1
+            },
+            "0.1-0.2": {
+              "n": 0,
+              "success": 0
+            },
+            ">=0.2": {
+              "n": 0,
+              "success": 0
+            }
+          },
+          "per_scene": [
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0724,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0569
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0491,
+              "fail_stage": "approach",
+              "layout_dist": 0.0186
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0906,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0253
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0638,
+              "fail_stage": "approach",
+              "layout_dist": 0.0292
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0942,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0445
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0646,
+              "fail_stage": "approach",
+              "layout_dist": 0.051
+            },
+            {
+              "success": 1,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0179,
+              "fail_stage": null,
+              "layout_dist": 0.0337
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.1028,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0404
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0423,
+              "fail_stage": "grasp",
+              "layout_dist": 0.054
+            },
+            {
+              "success": 1,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0336,
+              "fail_stage": null,
+              "layout_dist": 0.0457
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0431,
+              "fail_stage": "approach",
+              "layout_dist": 0.0287
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0296,
+              "fail_stage": "place",
+              "layout_dist": 0.038
+            },
+            {
+              "success": 1,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0266,
+              "fail_stage": null,
+              "layout_dist": 0.0578
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0403,
+              "fail_stage": "approach",
+              "layout_dist": 0.0277
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 1,
+              "carry": 1,
+              "min_dist": 0.0292,
+              "fail_stage": "place",
+              "layout_dist": 0.0299
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.075,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0316
+            },
+            {
+              "success": 0,
+              "grasp": 1,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0392,
+              "fail_stage": "grasp",
+              "layout_dist": 0.0467
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0869,
+              "fail_stage": "approach",
+              "layout_dist": 0.0567
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0719,
+              "fail_stage": "approach",
+              "layout_dist": 0.0402
+            },
+            {
+              "success": 0,
+              "grasp": 0,
+              "lift": 0,
+              "carry": 0,
+              "min_dist": 0.0522,
+              "fail_stage": "approach",
+              "layout_dist": 0.0271
+            }
+          ]
+        }
+      }
+    }
+  },
+  "dagger_curves": {
+    "0": [
+      {
+        "round": 0,
+        "train_size": 204,
+        "new_states": 800,
+        "n": 4,
+        "success": 0,
+        "grasp": 4,
+        "lift": 1,
+        "carry": 2,
+        "fail_stages": {
+          "grasp": 3,
+          "place": 1
+        },
+        "takeover": {
+          "approach": 0.98,
+          "near_grasp": 1.0,
+          "lift": 1.0,
+          "carry": 1.0,
+          "dest_approach": 1.0,
+          "release": 1.0
+        }
+      },
+      {
+        "round": 1,
+        "train_size": 988,
+        "new_states": 800,
+        "n": 4,
+        "success": 2,
+        "grasp": 4,
+        "lift": 2,
+        "carry": 3,
+        "fail_stages": {
+          "grasp": 2
+        },
+        "takeover": {
+          "approach": 1.0,
+          "near_grasp": 1.0,
+          "lift": 1.0,
+          "carry": 1.0,
+          "dest_approach": 1.0,
+          "release": 1.0
+        }
+      },
+      {
+        "round": 2,
+        "train_size": 1237,
+        "new_states": 800,
+        "n": 4,
+        "success": 1,
+        "grasp": 3,
+        "lift": 2,
+        "carry": 2,
+        "fail_stages": {
+          "grasp": 1,
+          "place": 1,
+          "approach": 1
+        },
+        "takeover": {
+          "approach": 0.91,
+          "near_grasp": null,
+          "lift": 1.0,
+          "carry": 1.0,
+          "dest_approach": 1.0,
+          "release": 1.0
+        }
+      },
+      {
+        "round": 3,
+        "train_size": 1493,
+        "new_states": 800,
+        "n": 4,
+        "success": 2,
+        "grasp": 4,
+        "lift": 3,
+        "carry": 3,
+        "fail_stages": {
+          "grasp": 1,
+          "place": 1
+        },
+        "takeover": {
+          "approach": 1.0,
+          "near_grasp": 1.0,
+          "lift": 1.0,
+          "carry": 1.0,
+          "dest_approach": 1.0,
+          "release": null
+        }
+      },
+      {
+        "round": 4,
+        "train_size": 1651,
+        "new_states": 800,
+        "n": 4,
+        "success": 1,
+        "grasp": 4,
+        "lift": 4,
+        "carry": 4,
+        "fail_stages": {
+          "place": 3
+        },
+        "takeover": {
+          "approach": 1.0,
+          "near_grasp": 1.0,
+          "lift": 1.0,
+          "carry": 1.0,
+          "dest_approach": 1.0,
+          "release": 1.0
+        }
+      }
+    ],
+    "1": [
+      {
+        "round": 0,
+        "train_size": 204,
+        "new_states": 800,
+        "n": 4,
+        "success": 0,
+        "grasp": 4,
+        "lift": 3,
+        "carry": 1,
+        "fail_stages": {
+          "grasp": 1,
+          "carry": 2,
+          "place": 1
+        },
+        "takeover": {
+          "approach": 1.0,
+          "near_grasp": 1.0,
+          "lift": 1.0,
+          "carry": 0.5,
+          "dest_approach": null,
+          "release": null
+        }
+      },
+      {
+        "round": 1,
+        "train_size": 1004,
+        "new_states": 800,
+        "n": 4,
+        "success": 0,
+        "grasp": 4,
+        "lift": 3,
+        "carry": 1,
+        "fail_stages": {
+          "place": 1,
+          "carry": 2,
+          "grasp": 1
+        },
+        "takeover": {
+          "approach": 1.0,
+          "near_grasp": 1.0,
+          "lift": 1.0,
+          "carry": 1.0,
+          "dest_approach": null,
+          "release": null
+        }
+      },
+      {
+        "round": 2,
+        "train_size": 1472,
+        "new_states": 800,
+        "n": 4,
+        "success": 0,
+        "grasp": 3,
+        "lift": 2,
+        "carry": 2,
+        "fail_stages": {
+          "grasp": 1,
+          "approach": 1,
+          "place": 2
+        },
+        "takeover": {
+          "approach": 1.0,
+          "near_grasp": 1.0,
+          "lift": 1.0,
+          "carry": 1.0,
+          "dest_approach": 1.0,
+          "release": null
+        }
+      },
+      {
+        "round": 3,
+        "train_size": 1586,
+        "new_states": 800,
+        "n": 4,
+        "success": 1,
+        "grasp": 3,
+        "lift": 1,
+        "carry": 2,
+        "fail_stages": {
+          "grasp": 1,
+          "approach": 1,
+          "place": 1
+        },
+        "takeover": {
+          "approach": 1.0,
+          "near_grasp": 1.0,
+          "lift": 1.0,
+          "carry": 1.0,
+          "dest_approach": 1.0,
+          "release": null
+        }
+      },
+      {
+        "round": 4,
+        "train_size": 1784,
+        "new_states": 800,
+        "n": 4,
+        "success": 1,
+        "grasp": 3,
+        "lift": 1,
+        "carry": 1,
+        "fail_stages": {
+          "grasp": 2,
+          "approach": 1
+        },
+        "takeover": {
+          "approach": 1.0,
+          "near_grasp": 1.0,
+          "lift": 1.0,
+          "carry": 1.0,
+          "dest_approach": 1.0,
+          "release": null
+        }
+      }
+    ],
+    "2": [
+      {
+        "round": 0,
+        "train_size": 204,
+        "new_states": 800,
+        "n": 4,
+        "success": 0,
+        "grasp": 0,
+        "lift": 0,
+        "carry": 0,
+        "fail_stages": {
+          "approach": 4
+        },
+        "takeover": {
+          "approach": 1.0,
+          "near_grasp": null,
+          "lift": null,
+          "carry": null,
+          "dest_approach": null,
+          "release": null
+        }
+      },
+      {
+        "round": 1,
+        "train_size": 674,
+        "new_states": 800,
+        "n": 4,
+        "success": 1,
+        "grasp": 2,
+        "lift": 1,
+        "carry": 1,
+        "fail_stages": {
+          "approach": 2,
+          "carry": 1
+        },
+        "takeover": {
+          "approach": 1.0,
+          "near_grasp": 1.0,
+          "lift": 1.0,
+          "carry": null,
+          "dest_approach": null,
+          "release": null
+        }
+      },
+      {
+        "round": 2,
+        "train_size": 865,
+        "new_states": 800,
+        "n": 4,
+        "success": 0,
+        "grasp": 4,
+        "lift": 3,
+        "carry": 0,
+        "fail_stages": {
+          "carry": 3,
+          "grasp": 1
+        },
+        "takeover": {
+          "approach": 1.0,
+          "near_grasp": 1.0,
+          "lift": 1.0,
+          "carry": 1.0,
+          "dest_approach": null,
+          "release": null
+        }
+      },
+      {
+        "round": 3,
+        "train_size": 1027,
+        "new_states": 800,
+        "n": 4,
+        "success": 1,
+        "grasp": 4,
+        "lift": 2,
+        "carry": 2,
+        "fail_stages": {
+          "grasp": 2,
+          "place": 1
+        },
+        "takeover": {
+          "approach": 0.6,
+          "near_grasp": 1.0,
+          "lift": 1.0,
+          "carry": 1.0,
+          "dest_approach": 1.0,
+          "release": 1.0
+        }
+      },
+      {
+        "round": 4,
+        "train_size": 1134,
+        "new_states": 800,
+        "n": 4,
+        "success": 1,
+        "grasp": 2,
+        "lift": 2,
+        "carry": 2,
+        "fail_stages": {
+          "approach": 2,
+          "place": 1
+        },
+        "takeover": {
+          "approach": 1.0,
+          "near_grasp": 1.0,
+          "lift": 1.0,
+          "carry": 1.0,
+          "dest_approach": null,
+          "release": null
+        }
+      }
+    ]
+  },
+  "matched_N": {
+    "0": 1651,
+    "1": 1784,
+    "2": 1134
+  },
+  "runtime_min": 43.1,
+  "aggregate": {
+    "demos_only": {
+      "memorized_of_12": 0,
+      "held_out_of_60": 0
+    },
+    "perturbation": {
+      "memorized_of_12": 0,
+      "held_out_of_60": 0
+    },
+    "dagger": {
+      "memorized_of_12": 3,
+      "held_out_of_60": 6
+    }
+  }
+}
