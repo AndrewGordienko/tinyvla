@@ -123,6 +123,74 @@ Only after the four scenes reach 4/4 at the canonical 4 cm radius should the
 selection/test scenes, ≥3 seeds, per-command CIs). Compression / recovery /
 DAgger / H200 stay frozen until then.
 
+## Milestone 2: baselines + frozen-feature probe (perception vs control)
+
+### Privileged-state MLP baseline (`scripts/baseline_mlp.py`)
+
+75k-param MLP, one-step closed-loop; inputs = robot qpos/qvel + ee xyz + target
+cube xyz + destination xyz + grasped + previous action (28-dim); output = 6
+physical actuator targets; trained on the four command-0 demonstrations.
+
+- Fits the 283 demonstration pairs to **loss 1e-5**, yet reaches only **1/4**
+  closed-loop at 4 cm (approach 3/4, grasp 3/4, lift 3/4, carry 2/4, **place 1/4**).
+
+### Frozen-feature spatial probe (`scripts/frozen_probe.py`)
+
+300 randomized command-0 scenes (arm at home), held-out split by position. Decode
+the red cube's xyz (linear + small MLP) from each representation:
+
+| representation | probe | eucl mean | median | <1 cm | <2 cm | <4 cm |
+|---|---|---|---|---|---|---|
+| raw pixels 64² (tiny CNN) | cnn | 6.44 | 5.47 | 0% | 12% | 27% |
+| frozen vision-encoder (768d, mean-pool) | mlp | 1.62 | 1.24 | 37% | 75% | 93% |
+| frozen connector (960d, mean-pool) | mlp | 1.57 | 1.24 | 38% | 75% | 93% |
+
+### Narrow, honest conclusion (supersedes "under-optimization vs frozen features")
+
+- **SmolVLA's frozen features encode the cube position** — a *linear* probe on the
+  pooled connector tokens localizes to ~1.6 cm mean (93% within 4 cm), and the
+  expert consumes the richer *un-pooled* 64-token grid, so this is a lower bound.
+  Perception is **not** the primary bottleneck; **do not unfreeze vision on this
+  evidence**.
+- **What is actually proven:** *one-step BC on these four stateful-expert
+  demonstrations is not closed-loop stable even with perfect privileged spatial
+  state.* This does **not** yet prove generic covariate shift is the sole cause.
+- **Major unresolved confound:** the demonstrations come from the stateful
+  `expert_action()`, whose target depends on hidden `phase`/`phase_t`, which the
+  policy never observes. Around approach/close/lift/drop transitions, nearly
+  identical observations can have different correct actions — i.e. **label
+  ambiguity / partial observability**, distinct from ordinary covariate shift.
+
+### Probe caveats (do not over-read)
+
+- Mean-pooling can destroy positional info still present in the token grid — a
+  spatial-token head is the fair test (TODO).
+- Cube z is nearly constant in ungrasped initial scenes, so xyz overstates
+  accuracy; report x/y separately.
+- Initial-home-pose frames do not test approach/grasp/carry states where control
+  fails. The raw-pixel CNN here is a weak learner (64², 180 samples), not a valid
+  upper bound.
+
+### Next: separate Markovity from covariate shift (before any SmolVLA sweep)
+
+1. Nearest-neighbour ambiguity audit in privileged-state space (conflicting
+   actions for near-identical states, around each phase transition); report **max**
+   physical action error, not just mean.
+2. Oracle-phase privileged MLP (add one-hot phase + phase_t + step_idx). If 1/4 →
+   4/4, the demonstrations are partially observable for the policy.
+3. Stateless **reactive-expert** dataset (regenerate the four scenes with
+   `reactive_action()`), retrain the identical MLP with no phase. If it passes,
+   the stateful generator's labels were the problem.
+4. Small perturbation-recovery diagnostic (reactive-expert relabelling), original
+   vs original+recovery.
+5. Teacher-forced vs closed-loop deviation (where the first irreversible error
+   occurs).
+6. Corrected probe: spatial-token heads (not mean-pool) over dynamic states
+   (approach/grasp/carry), x/y separate.
+
+The trainability sweep and 2000-step run stay deferred until this is resolved.
+Compression / recovery / distillation / full DAgger / H200 remain frozen.
+
 ## Reproduce
 
 ```bash
