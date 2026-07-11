@@ -78,8 +78,9 @@ def train(X, Y, seed, steps, lr=1e-3):
 
 
 def reactive_demos(scenes):
+    """Reactive trajectories with per-state snapshots so images can be re-rendered."""
     env = SO101PickPlaceTask()
-    X, Y, stg = [], [], []
+    X, Y, stg, snaps, cmds = [], [], [], [], []
     demo_states = []
     for scene in scenes:
         command = int(scene["command"]); color = _color(command)
@@ -90,11 +91,25 @@ def reactive_demos(scenes):
             a = env.reactive_action(gain=0.25, max_dq=0.03).astype(np.float32)
             f = features(env, prev)
             X.append(f); Y.append(a); stg.append(stage_of(env, color)); demo_states.append(f[:22])
+            snaps.append(_snapshot(env)); cmds.append(command)
             env.step(a); prev = a
             dwell = dwell + 1 if env.success() else 0
             if dwell >= DWELL:
                 break
-    return np.asarray(X, np.float32), np.asarray(Y, np.float32), stg, np.asarray(demo_states, np.float32)
+    return (np.asarray(X, np.float32), np.asarray(Y, np.float32), stg,
+            np.asarray(demo_states, np.float32), snaps, cmds)
+
+
+def held_out_scenes(n, seed):
+    """n deterministic unseen command-0 scenes (random cube layouts)."""
+    env = SO101PickPlaceTask()
+    scenes = []
+    for i in range(n):
+        env.rng = np.random.default_rng(10_000 + seed + i)
+        env.reset(command=0)
+        scenes.append({"episode": i, "command": 0, "instruction": env.instruction,
+                       "positions": {c: env.cube_pos(c).tolist() for c in ("red", "blue")}})
+    return scenes
 
 
 def learner_rollout(model, norm, scene, cap, radius, demo_states, collect):
@@ -152,6 +167,37 @@ def eval_seeds(build_train, scenes, seeds, steps, cap, demo_states):
     return out
 
 
+def takeover_rate(visited, command, cap, subsample=8):
+    """Expert-takeover recovery by stage from a set of visited states."""
+    by = {s: {"n": 0, "rec": 0} for s in STAGES}
+    fails = []
+    for v in visited[::subsample]:
+        st = v["stage"]; by[st]["n"] += 1
+        ok = expert_takeover(v["snapshot"], command, cap)
+        by[st]["rec"] += int(ok)
+        if not ok:
+            fails.append({"stage": st, "dist_to_demo": round(v["dist_to_demo"], 3)})
+    rate = {s: (round(by[s]["rec"] / by[s]["n"], 2) if by[s]["n"] else None) for s in STAGES}
+    return rate, by, fails
+
+
+def export_aggregate(path, feats, labels, snaps, stages, sources, rounds, command, env):
+    nq, nv = env.model.nq, env.model.nv
+    n = len(feats)
+    qpos = np.zeros((n, nq), np.float32); qvel = np.zeros((n, nv), np.float32)
+    grasped = np.array([sn["grasped"] or "" for sn in snaps])
+    offp = np.full((n, 3), np.nan, np.float32); offq = np.full((n, 4), np.nan, np.float32)
+    for i, sn in enumerate(snaps):
+        qpos[i] = sn["qpos"]; qvel[i] = sn["qvel"]
+        if sn["off_pos"] is not None:
+            offp[i] = sn["off_pos"]; offq[i] = sn["off_quat"]
+    np.savez_compressed(path, sample_id=np.arange(n), feat=np.asarray(feats, np.float32),
+                        label=np.asarray(labels, np.float32), qpos=qpos, qvel=qvel,
+                        grasped=grasped, off_pos=offp, off_quat=offq,
+                        command=np.full(n, command), stage=np.array(stages),
+                        source=np.array(sources), source_round=np.asarray(rounds))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default="artifacts/truth_harness/datasets/command0_4")
@@ -160,66 +206,72 @@ def main() -> None:
     ap.add_argument("--steps", type=int, default=5000)
     ap.add_argument("--cap", type=int, default=200)
     ap.add_argument("--stage-cap", type=int, default=600)
+    ap.add_argument("--held-out", type=int, default=20)
+    ap.add_argument("--export-dir", default="artifacts/truth_harness/dagger_dataset")
     ap.add_argument("--output", default="artifacts/truth_harness/controlled_dagger.json")
     args = ap.parse_args()
     seeds = [int(s) for s in args.seeds.split(",")]
     scenes = json.loads((Path(args.root) / "scene_manifest.json").read_text())["scenes"]
-    Xd, Yd, stg_d, demo_states = reactive_demos(scenes)
+    command0 = int(scenes[0]["command"])
+    Xd, Yd, stg_d, demo_states, snap_d, cmd_d = reactive_demos(scenes)
+    ho_scenes = held_out_scenes(args.held_out, 0)
+    Path(args.export_dir).mkdir(parents=True, exist_ok=True)
+    env_ref = SO101PickPlaceTask()
 
-    # ---- expert-takeover recoverability from initial-model learner states, by stage
-    seed_everything(0)
-    m0, n0 = train(Xd, Yd, 0, args.steps)
-    takeover = {s: {"n": 0, "recovered": 0} for s in STAGES}
-    for scene in scenes:
-        _, visited = learner_rollout(m0, n0, scene, args.cap, GRASP_RADIUS, demo_states, True)
-        for v in visited[::5]:                              # subsample for speed
-            st = v["stage"]
-            takeover[st]["n"] += 1
-            takeover[st]["recovered"] += int(expert_takeover(v["snapshot"], int(scene["command"]), args.cap))
-    recover_rate = {s: (round(takeover[s]["recovered"] / takeover[s]["n"], 2) if takeover[s]["n"] else None)
-                    for s in STAGES}
-
-    # ---- DAgger per seed (independent aggregates), retrain from scratch each round
-    dagger = {}
-    final_aggr_sizes = []
+    dagger, ctrl_N, held_out, per_round_takeover, release_fail = {}, [], {}, {}, []
     for seed in seeds:
-        aggX, aggY, aggS = [Xd.copy()], [Yd.copy()], list(stg_d)
-        curve = []
+        # flat aggregate so snapshots/sources stay aligned with rows
+        a_feat = [f for f in Xd]; a_lab = [y for y in Yd]; a_snap = list(snap_d)
+        a_stage = list(stg_d); a_src = ["demo"] * len(Xd); a_round = [-1] * len(Xd)
+        curve, last_keep = [], None
         for rnd in range(args.rounds):
-            X = np.concatenate(aggX); Y = np.concatenate(aggY)
-            # stage-balanced cap so stalled states don't dominate (keep all originals)
-            keep = []
-            counts = {s: 0 for s in set(aggS)}
-            for i, s in enumerate(aggS):
-                if i < len(Xd) or counts[s] < args.stage_cap:
+            counts = {}; keep = []
+            for i, s in enumerate(a_stage):
+                counts.setdefault(s, 0)
+                if a_src[i] == "demo" or counts[s] < args.stage_cap:
                     keep.append(i); counts[s] += 1
-            Xk, Yk = X[keep], Y[keep]
+            Xk = np.asarray([a_feat[i] for i in keep], np.float32)
+            Yk = np.asarray([a_lab[i] for i in keep], np.float32)
             model, norm = train(Xk, Yk, seed, args.steps)
             rolls, visited_all = [], []
             for s in scenes:
                 r, vis = learner_rollout(model, norm, s, args.cap, GRASP_RADIUS, demo_states, True)
                 rolls.append(r); visited_all += vis
             succ = sum(r["success"] for r in rolls)
-            disagreement = float(np.mean([v["disagreement"] for v in visited_all])) if visited_all else 0.0
-            stage_dist = {s: int(sum(1 for x in aggS if x == s)) for s in STAGES}
-            curve.append({"round": rnd, "aggregate": int(len(Xk)), "new_states": len(visited_all),
-                          "success": succ, "mean_disagreement": round(disagreement, 4),
+            tk_rate, _, tk_fails = takeover_rate(visited_all, command0, args.cap)
+            release_fail += [f for f in tk_fails if f["stage"] == "release"]
+            curve.append({"round": rnd, "train_size": int(len(keep)), "new_states": len(visited_all),
+                          "success": succ,
+                          "mean_disagreement": round(float(np.mean([v["disagreement"] for v in visited_all])), 4),
                           "grasp": sum(r["grasp"] for r in rolls), "lift": sum(r["lift"] for r in rolls),
                           "carry": sum(r["carry"] for r in rolls),
                           "mean_min_dist": round(float(np.mean([r["min_dist"] for r in rolls])), 4),
-                          "worst_min_dist": round(float(np.max([r["min_dist"] for r in rolls])), 4),
                           "first_fail_stages": [r["first_fail_stage"] for r in rolls],
-                          "stage_dist": stage_dist})
-            # aggregate on-policy states
-            aggX.append(np.asarray([v["feat"] for v in visited_all], np.float32))
-            aggY.append(np.asarray([v["expert"] for v in visited_all], np.float32))
-            aggS += [v["stage"] for v in visited_all]
+                          "takeover_rate": tk_rate,
+                          "stage_dist": {s: a_stage.count(s) for s in STAGES}})
+            last_keep = keep
+            for v in visited_all:
+                a_feat.append(v["feat"]); a_lab.append(v["expert"]); a_snap.append(v["snapshot"])
+                a_stage.append(v["stage"]); a_src.append("dagger"); a_round.append(rnd)
         dagger[str(seed)] = curve
-        final_aggr_sizes.append(len(np.concatenate(aggX)))
+        ctrl_N.append(curve[-1]["train_size"])           # winning model's ACTUAL training size
+        per_round_takeover[str(seed)] = [c["takeover_rate"] for c in curve]
+        # export the exact winning (final-round) training set for the CNN transfer control
+        export_aggregate(str(Path(args.export_dir) / f"seed{seed}.npz"),
+                         [a_feat[i] for i in last_keep], [a_lab[i] for i in last_keep],
+                         [a_snap[i] for i in last_keep], [a_stage[i] for i in last_keep],
+                         [a_src[i] for i in last_keep], [a_round[i] for i in last_keep],
+                         command0, env_ref)
+        # held-out 20 with the final model
+        fm, fn = train(np.asarray([a_feat[i] for i in last_keep], np.float32),
+                       np.asarray([a_lab[i] for i in last_keep], np.float32), seed, args.steps)
+        ho = [learner_rollout(fm, fn, s, args.cap, GRASP_RADIUS, demo_states, False)[0] for s in ho_scenes]
+        held_out[str(seed)] = {"n": len(ho), "success": sum(r["success"] for r in ho),
+                               "grasp": sum(r["grasp"] for r in ho), "lift": sum(r["lift"] for r in ho),
+                               "carry": sum(r["carry"] for r in ho)}
 
-    # ---- controls A/B/C at matched size & updates
-    N = int(np.mean(final_aggr_sizes))
-    # fixed random-perturbation recovery data for control B (off-policy noise, not on-policy)
+    # ---- controls A/B/C matched to the WINNING model's training size (fixes off-by-one)
+    N = int(np.mean(ctrl_N))
     from scripts.perturbation_recovery import reactive_demos as pr_demos
     _, _, snaps, cmds = pr_demos(scenes)
     Xrec, Yrec, _ = recovery_set(snaps, cmds, MAGS, 3, 0)
@@ -237,16 +289,18 @@ def main() -> None:
         "C_dagger_final": [dagger[str(s)][-1]["success"] for s in seeds],
     }
 
-    out = {"seeds": seeds, "rounds": args.rounds, "matched_size_N": N,
-           "expert_takeover_recoverability_by_stage": recover_rate,
-           "expert_takeover_counts": takeover,
-           "dagger_curves": dagger,
-           "controls_success_out_of_4_per_seed": controls}
+    out = {"seeds": seeds, "rounds": args.rounds, "matched_train_size_N": N,
+           "expert_takeover_by_round": per_round_takeover,
+           "release_stage_failures": release_fail,
+           "dagger_curves": dagger, "held_out": held_out,
+           "controls_success_out_of_4_per_seed": controls,
+           "export_dir": args.export_dir}
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output).write_text(json.dumps(out, indent=2) + "\n")
-    print(json.dumps({"expert_takeover": recover_rate,
-                      "dagger_success_by_round": {s: [c["success"] for c in dagger[s]] for s in dagger},
-                      "controls": controls}, indent=2))
+    print(json.dumps({"dagger_success_by_round": {s: [c["success"] for c in dagger[s]] for s in dagger},
+                      "held_out_success_of_20": {s: held_out[s]["success"] for s in held_out},
+                      "matched_train_size_N": N, "controls": controls,
+                      "release_failures": len(release_fail)}, indent=2))
 
 
 if __name__ == "__main__":
