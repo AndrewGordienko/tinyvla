@@ -64,6 +64,12 @@ class CompactVocabularyError(RuntimeError):
         )
 
 
+class MissingActionSemanticsError(RuntimeError):
+    """Raised when a local artifact has no action-semantics marker and legacy
+    imports are not explicitly allowed. Guards against silently assuming
+    'absolute' actions for a checkpoint/dataset that predates the marker."""
+
+
 def installed_versions() -> dict[str, str]:
     values: dict[str, str] = {}
     for package in AUTHORITATIVE_VERSIONS:
@@ -175,7 +181,20 @@ def write_action_semantics(path: str | Path, semantics: ActionSemantics) -> None
         legacy.unlink()
 
 
-def detect_action_semantics(path: str | Path, *, legacy_default: ActionSemantics = "absolute") -> ActionSemantics:
+def detect_action_semantics(
+    path: str | Path,
+    *,
+    allow_legacy: bool = False,
+    legacy_default: ActionSemantics = "absolute",
+) -> ActionSemantics:
+    """Read the action-semantics marker of a checkpoint/dataset directory.
+
+    A missing marker is an ERROR by default: an unmarked legacy artifact could be
+    either absolute or delta, and silently assuming 'absolute' has previously
+    hidden action-representation mismatches. Pass ``allow_legacy=True`` to opt in
+    to treating an unmarked artifact as ``legacy_default`` (an explicit, auditable
+    decision for intentional legacy imports).
+    """
     path = Path(path)
     explicit = path / "action_semantics.json"
     legacy = path / "delta_actions.json"
@@ -192,7 +211,14 @@ def detect_action_semantics(path: str | Path, *, legacy_default: ActionSemantics
         if data.get("delta_actions") is not True:
             raise ValueError(f"invalid legacy delta marker {legacy}")
         return "delta"
-    return legacy_default
+    if allow_legacy:
+        return legacy_default
+    raise MissingActionSemanticsError(
+        f"no action_semantics.json (or delta_actions.json) in {path}. This is a "
+        f"legacy artifact with unknown action representation; re-export it with a "
+        f"marker, or pass allow_legacy_semantics=True to treat it as "
+        f"'{legacy_default}' actions intentionally."
+    )
 
 
 def resolve_action_semantics(
@@ -386,17 +412,40 @@ def load_runtime(
     allowed_missing: tuple[str, ...] = (),
     allowed_unexpected: tuple[str, ...] = (),
     enforce_versions: bool = True,
+    allow_legacy_semantics: bool = False,
+    report_dir: str | Path | None = None,
 ) -> RuntimeBundle:
-    """Load policy, saved config, processors, action semantics, and audits together."""
+    """Load policy, saved config, processors, action semantics, and audits together.
+
+    Loading is READ-ONLY: the checkpoint directory is never written to. The load
+    report is returned on the bundle and (optionally) written to ``report_dir`` — a
+    run/result directory — so a pristine checkpoint stays a pure input artifact.
+    """
 
     if enforce_versions:
         assert_authoritative_environment()
     device = torch.device(device)
     path = Path(model_path)
     local_checkpoint = path.is_dir()
-    dataset_semantics = detect_action_semantics(dataset_root) if dataset_root is not None else None
+    report_out = Path(report_dir) if report_dir is not None else None
+
+    def _emit_report(report: dict[str, Any], name: str = "load_report.json") -> None:
+        """Write the report to the run/result dir if one was given; never to the
+        checkpoint. Always echo to stdout so it is captured in run logs."""
+        if report_out is not None:
+            report_out.mkdir(parents=True, exist_ok=True)
+            (report_out / name).write_text(json.dumps(report, indent=2) + "\n")
+        print(json.dumps({"runtime_load_report": report}, indent=2))
+
+    dataset_semantics = (
+        detect_action_semantics(dataset_root, allow_legacy=allow_legacy_semantics)
+        if dataset_root is not None
+        else None
+    )
     checkpoint_semantics = (
-        None if base_checkpoint or not local_checkpoint else detect_action_semantics(path)
+        None
+        if base_checkpoint or not local_checkpoint
+        else detect_action_semantics(path, allow_legacy=allow_legacy_semantics)
     )
     semantics = resolve_action_semantics(
         dataset=dataset_semantics,
@@ -427,10 +476,13 @@ def load_runtime(
             load_report = checkpoint_tensor_report(
                 policy, path, allowed_missing=allowed_missing, allowed_unexpected=allowed_unexpected
             )
-            (path / "load_report.json").write_text(json.dumps(load_report, indent=2) + "\n")
-            print(json.dumps({"smolvla_load_report": load_report}, indent=2))
+            _emit_report(load_report)
             if not load_report["ok"]:
-                raise RuntimeError(f"checkpoint tensor audit failed: {path / 'load_report.json'}")
+                raise RuntimeError(
+                    "checkpoint tensor audit failed: "
+                    + json.dumps({k: load_report[k] for k in (
+                        "unexplained_missing", "unexplained_unexpected", "shape_mismatches")})
+                )
         else:
             load_report = {"checkpoint": str(model_path), "remote": True, "ok": True}
 
@@ -442,17 +494,13 @@ def load_runtime(
         ) if local_checkpoint else {"compact": False, "ok": True}
     except CompactVocabularyError as error:
         load_report = {**load_report, "vocabulary": error.report, "action_semantics": semantics, "ok": False}
-        if local_checkpoint:
-            (path / "load_report.json").write_text(json.dumps(load_report, indent=2) + "\n")
-        print(json.dumps({"runtime_load_report": load_report}, indent=2))
+        _emit_report(load_report)
         raise
     preprocessor, postprocessor = make_processors(
         policy, model_path, device, meta, stats_source=stats_source
     )
     load_report = {**load_report, "vocabulary": vocabulary, "action_semantics": semantics}
-    if local_checkpoint:
-        (path / "load_report.json").write_text(json.dumps(load_report, indent=2) + "\n")
-    print(json.dumps({"runtime_load_report": load_report}, indent=2))
+    _emit_report(load_report)
     return RuntimeBundle(
         policy=policy,
         preprocessor=preprocessor,

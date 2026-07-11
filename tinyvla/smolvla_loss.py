@@ -13,6 +13,30 @@ from lerobot.utils.constants import (
 )
 
 
+def assert_tail_padding(action_is_pad: Tensor) -> None:
+    """Require ``action_is_pad`` to be contiguous episode-end (tail) padding.
+
+    Padding invariance — padded action timesteps cannot influence the model's
+    predictions at valid timesteps — is guaranteed by SmolVLA's action-expert
+    attention being CAUSAL within the action block (token k attends only to action
+    tokens 0..k plus the prefix) *combined with* padding always being a tail
+    suffix: a valid (earlier) token then never attends to a padded (later) one.
+    This holds for chunk padding produced when a chunk overruns the episode end.
+    If a dataset ever emitted interleaved padding, that invariant would break, so
+    fail loudly here rather than silently leak padded tokens into valid outputs.
+    """
+    if action_is_pad.ndim != 2:
+        raise ValueError(f"action_is_pad must be [B, T]; got {tuple(action_is_pad.shape)}")
+    pad = action_is_pad.to(torch.int8)
+    # A tail mask is non-decreasing along time (0...0 1...1). Any 1->0 step is
+    # interleaved padding.
+    if pad.shape[1] > 1 and torch.any(pad[:, 1:] < pad[:, :-1]):
+        raise ValueError(
+            "action_is_pad must be contiguous tail (episode-end) padding; "
+            "interleaved padding would break attention padding-invariance"
+        )
+
+
 def reduce_valid_action_loss(
     losses: Tensor,
     action_is_pad: Tensor | None,
@@ -59,10 +83,14 @@ def _corrected_forward(self, batch: dict[str, Tensor], noise=None, time=None, re
     lang_masks = batch[OBS_LANGUAGE_ATTENTION_MASK]
     action_is_pad = batch.get("action_is_pad")
     actions = self.prepare_action(batch)
-    # Padded action tokens participate in the action-expert transformer. Give
-    # them a canonical value so arbitrary dataset padding cannot influence even
-    # the predictions at valid timesteps through attention.
+    # Padded action tokens still enter the action-expert transformer. Two things
+    # keep them from affecting valid-timestep predictions: (1) action-block
+    # attention is causal, so a valid (earlier) token never attends to a padded
+    # (later) one, and (2) padding is a contiguous tail (asserted here). Zeroing
+    # the padded targets is belt-and-suspenders — it makes the padded inputs
+    # canonical — but the real guarantee is (1)+(2). See assert_tail_padding.
     if action_is_pad is not None:
+        assert_tail_padding(action_is_pad.to(device=actions.device))
         actions = actions.masked_fill(
             action_is_pad.to(device=actions.device, dtype=torch.bool).unsqueeze(-1), 0.0
         )

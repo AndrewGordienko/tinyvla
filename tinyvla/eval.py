@@ -53,6 +53,9 @@ def main():
     ap.add_argument("--delta-actions", action="store_true", default=None,
                     help="Legacy assertion only; semantics are loaded automatically.")
     ap.add_argument("--output", default=str(ARTIFACTS_ROOT / "evaluations" / "latest.json"))
+    ap.add_argument("--allow-legacy-semantics", action="store_true",
+                    help="Treat unmarked legacy dataset/checkpoint as 'absolute' actions "
+                         "(off by default; unmarked artifacts error).")
     args = ap.parse_args()
     commands = [int(value) for value in args.commands.split(",") if value]
     seed_everything(args.seed)
@@ -60,7 +63,8 @@ def main():
     device = torch.device(args.device)
     meta = LeRobotDatasetMetadata(args.repo_id, root=args.root)
     runtime = load_runtime(
-        args.model, meta=meta, dataset_root=args.root, device=device, stats_source="checkpoint"
+        args.model, meta=meta, dataset_root=args.root, device=device, stats_source="checkpoint",
+        allow_legacy_semantics=args.allow_legacy_semantics,
     )
     if args.delta_actions is not None and args.delta_actions != runtime.delta_actions:
         raise SystemExit(

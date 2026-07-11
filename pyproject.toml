@@ -38,3 +38,9 @@ tinyvla-train = "tinyvla.train:main"
 
 [tool.setuptools.packages.find]
 include = ["tinyvla*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "heavy: loads the real 450M checkpoint; slow, skipped when weights are absent",
+]

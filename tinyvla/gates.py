@@ -49,13 +49,19 @@ def main() -> int:
         help="Always exit 0 and just write the report; by default a failed gate exits 1 "
              "so CI/shell pipelines cannot mistake a failing model for a passing one.",
     )
+    parser.add_argument(
+        "--allow-legacy-semantics", action="store_true",
+        help="Treat unmarked legacy dataset/checkpoint as 'absolute' actions "
+             "(off by default; unmarked artifacts error).",
+    )
     args = parser.parse_args()
 
     root = Path(args.root)
     device = torch.device(args.device)
     meta = LeRobotDatasetMetadata(args.repo_id, root=root)
     runtime = load_runtime(
-        args.model, meta=meta, dataset_root=root, device=device, stats_source="checkpoint"
+        args.model, meta=meta, dataset_root=root, device=device, stats_source="checkpoint",
+        allow_legacy_semantics=args.allow_legacy_semantics,
     )
     positions = _manifest_positions(root)
     overfit = evaluate_closed_loop(

@@ -1,11 +1,31 @@
 # Four-scene overfit failure — diagnosis (in progress)
 
-The command-0 four-scene overfit gate fails (0/4). **The cause is not yet
+The command-0 four-scene overfit gate does not pass. **The cause is not yet
 established.** The failure is currently localized to **approach accuracy,
 gripper timing, or their interaction** — this document tracks the experiments
 that will actually discriminate between them. Nothing below rules out frozen
 visual representation, chunk/queue staleness, or gripper calibration until the
 causal counterfactual and corrected-metric tests are complete.
+
+> **Reconciling the "0/4" vs "1/4" numbers (exact checkpoint / seed / controller
+> mode / artifact).** These are different checkpoints and controller modes, not a
+> contradiction:
+>
+> | number | checkpoint | controller mode | seed / radius / n_action_steps | artifact |
+> |--------|-----------|-----------------|-------------------------------|----------|
+> | **1/4** | `command0_overfit_500` (500 steps) | **canonical: all-learned** | 4242 / 4 cm / 5 | `artifacts/truth_harness/hybrid_summary.json` → `conditions.A@4cm` |
+> | 0/4 | `command0_overfit_100` (100 steps) | all-learned | 4242 / 4 cm / default | `artifacts/truth_harness/four_scene_overfit_100.json` |
+> | 0/4 | `command0_overfit_500` | **non-canonical: learned arm + _expert_ gripper (cond B)** | 4242 / 4 cm / 5 | `hybrid_summary.json` → `conditions.B@4cm` |
+> | 0/4 | `command0_overfit_500` | all-learned | 4242 / 4 cm / **1** | `hybrid_summary.json` → `nstep_sweep."1"` |
+>
+> The number to quote for "does the canonical full-learned controller pass?" is
+> **1/4** (the 500-step checkpoint, all-learned actions, 4 cm radius,
+> `n_action_steps=5`, seed 4242). The bare "0/4" phrasings elsewhere in older
+> notes refer to the earlier 100-step checkpoint or to the deliberately
+> non-canonical ablations above (expert-gripper hand-off, or a 1-step replan) and
+> should always be qualified by checkpoint + controller mode. Either way the gate
+> threshold (≥95% memorized) is **not met** — the point of this document — so the
+> conclusion is unchanged; only the reported figure is now unambiguous.
 
 Corrections to the first-pass diagnosis (which overstated the evidence):
 - Old "Gate B round-trip" only compared **stored statistics**, never a real

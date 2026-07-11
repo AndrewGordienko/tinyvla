@@ -88,6 +88,10 @@ def main():
     ap.add_argument("--init-from", default=None,
                     help="Warm-start from this checkpoint dir instead of smolvla_base "
                          "(e.g. the previous DAgger round) — later rounds then need fewer steps.")
+    ap.add_argument("--allow-legacy-semantics", action="store_true",
+                    help="Treat a dataset/checkpoint with no action_semantics marker as "
+                         "'absolute' actions. Off by default: unmarked legacy artifacts error "
+                         "so an unknown action representation is never assumed silently.")
     args = ap.parse_args()
     cl_commands = [int(x) for x in args.closed_loop_commands.split(",") if x != ""]
     episode_indices = [int(x) for x in args.episodes.split(",")] if args.episodes else None
@@ -110,6 +114,7 @@ def main():
         device=device,
         stats_source="dataset",
         base_checkpoint=args.init_from is None,
+        allow_legacy_semantics=args.allow_legacy_semantics,
     )
     policy = runtime.policy
     preprocessor, postprocessor = runtime.preprocessor, runtime.postprocessor

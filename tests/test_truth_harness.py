@@ -17,8 +17,10 @@ from lerobot.utils.constants import (
 
 from tinyvla.determinism import preserve_rng_state
 from tinyvla.eval_closedloop import evaluate_closed_loop
+from lerobot.policies.smolvla.modeling_smolvla import make_att_2d_masks
 from tinyvla.runtime import (
     AUTHORITATIVE_VERSIONS,
+    MissingActionSemanticsError,
     apply_saved_runtime_config,
     assert_authoritative_environment,
     checkpoint_tensor_report,
@@ -27,7 +29,11 @@ from tinyvla.runtime import (
     verify_compact_vocabulary,
     write_action_semantics,
 )
-from tinyvla.smolvla_loss import install_corrected_smolvla_loss, reduce_valid_action_loss
+from tinyvla.smolvla_loss import (
+    assert_tail_padding,
+    install_corrected_smolvla_loss,
+    reduce_valid_action_loss,
+)
 
 
 def test_authoritative_dependency_versions_are_installed():
@@ -102,12 +108,56 @@ def test_installed_policy_loss_uses_action_is_pad_and_canonicalizes_padding():
 
 
 def test_action_semantics_markers_and_legacy_detection(tmp_path: Path):
-    assert detect_action_semantics(tmp_path) == "absolute"
+    # A missing marker is a hard error by default (unknown legacy representation)...
+    with pytest.raises(MissingActionSemanticsError):
+        detect_action_semantics(tmp_path)
+    # ...unless legacy imports are explicitly allowed.
+    assert detect_action_semantics(tmp_path, allow_legacy=True) == "absolute"
     write_action_semantics(tmp_path, "delta")
     assert detect_action_semantics(tmp_path) == "delta"
     write_action_semantics(tmp_path, "absolute")
     assert detect_action_semantics(tmp_path) == "absolute"
     assert not (tmp_path / "delta_actions.json").exists()
+
+
+def test_tail_padding_assertion_accepts_tail_and_rejects_interleaved():
+    assert_tail_padding(torch.tensor([[False, False, True, True], [False, True, True, True]]))
+    assert_tail_padding(torch.tensor([[False, False, False]]))  # no padding
+    assert_tail_padding(torch.tensor([[True, True]]))            # all padding
+    with pytest.raises(ValueError, match="contiguous tail"):
+        assert_tail_padding(torch.tensor([[False, True, False]]))  # interleaved
+
+
+def test_action_block_attention_isolates_tail_padding():
+    """Regression guard for padding invariance: with SmolVLA's action-block
+    attention (each action token att_mask=1 -> causal) and tail padding, a valid
+    (earlier) action token must never attend to a padded (later) one, and prefix
+    tokens must never attend to action tokens."""
+    prefix_len, chunk = 6, 8
+    valid = 5  # first `valid` action tokens real; last chunk-valid are tail padding
+    pad_masks = torch.ones(1, prefix_len + chunk, dtype=torch.bool)  # == embed_suffix
+    att_masks = torch.zeros(1, prefix_len + chunk, dtype=torch.long)
+    att_masks[0, prefix_len:] = 1                                    # each action token a block
+    mask = make_att_2d_masks(pad_masks, att_masks)[0]               # [N, N] query x key
+    action = slice(prefix_len, prefix_len + chunk)
+    action_block = mask[action, action]
+    assert not action_block[:valid, valid:].any(), "valid tokens attend padded tail"
+    assert not mask[:prefix_len, action].any(), "prefix attends action tokens"
+    # sanity: attention within the action block is exactly causal (lower-triangular)
+    assert torch.equal(action_block, torch.tril(torch.ones(chunk, chunk, dtype=torch.bool)))
+
+
+def test_installed_loss_rejects_interleaved_padding():
+    policy = install_corrected_smolvla_loss(_LossPolicy())
+    batch = {
+        ACTION: torch.ones(1, 3, 6),
+        "observation.state": torch.zeros(1, 6),
+        OBS_LANGUAGE_TOKENS: torch.zeros(1, 1, dtype=torch.long),
+        OBS_LANGUAGE_ATTENTION_MASK: torch.ones(1, 1, dtype=torch.bool),
+        "action_is_pad": torch.tensor([[False, True, False]]),  # interleaved
+    }
+    with pytest.raises(ValueError, match="contiguous tail"):
+        policy.forward(batch)
 
 
 def test_saved_n_action_steps_is_restored(tmp_path: Path):

@@ -242,10 +242,15 @@ def load_pruned_smolvla(
             ],
             "ok": False,
         }
-        destination = Path(report_path) if report_path is not None else pretrained_path / "load_report.json"
-        destination.write_text(json.dumps(report, indent=2) + "\n")
+        # Read-only load: only write a report when an explicit run/result path is
+        # given; never pollute the checkpoint directory.
+        if report_path is not None:
+            Path(report_path).write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps({"smolvla_load_report": report}, indent=2))
-        raise RuntimeError(f"pruned checkpoint shape audit failed; report={destination}")
+        raise RuntimeError(
+            "pruned checkpoint shape audit failed; shape_mismatches="
+            + json.dumps(shape_mismatches)
+        )
 
     # Always ask safetensors for the complete key report. We enforce strictness
     # ourselves so explicitly allowlisted structural removals remain auditable.
@@ -271,15 +276,16 @@ def load_pruned_smolvla(
         "unexplained_unexpected": unexplained_unexpected,
         "ok": not unexplained_missing and not unexplained_unexpected,
     }
-    destination = Path(report_path) if report_path is not None else pretrained_path / "load_report.json"
-    destination.write_text(json.dumps(report, indent=2) + "\n")
+    # Read-only load: only write a report when an explicit run/result path is given.
+    if report_path is not None:
+        Path(report_path).write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({"smolvla_load_report": report}, indent=2))
     policy._tinyvla_load_report = report
     if strict and not report["ok"]:
         raise RuntimeError(
             "pruned checkpoint tensor audit failed; "
             f"unexplained_missing={unexplained_missing}, "
-            f"unexplained_unexpected={unexplained_unexpected}; report={destination}"
+            f"unexplained_unexpected={unexplained_unexpected}"
         )
 
     policy.to(cfg.device)
