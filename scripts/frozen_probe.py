@@ -50,7 +50,8 @@ def gen_dataset(n: int, seed: int, model_path, meta, root, device):
         for i in range(n):
             env.rng = np.random.default_rng(seed + i)
             env.reset(command=0)                       # both cubes randomized; target = red
-            raw = renderer.render()                    # (IMG, IMG, 3) uint8
+            renderer.update_scene(env.data, camera="front")  # MUST update before render
+            raw = renderer.render()                    # (IMG, IMG, 3) uint8 of THIS scene
             small = torch.from_numpy(raw).permute(2, 0, 1).float().div(255.0)
             small = nn.functional.interpolate(small.unsqueeze(0), size=(64, 64),
                                               mode="bilinear", align_corners=False).squeeze(0)
@@ -70,10 +71,14 @@ def gen_dataset(n: int, seed: int, model_path, meta, root, device):
 def _metrics(pred, tgt):
     err = pred - tgt
     eucl = np.linalg.norm(err, axis=1)                 # meters
+    xy = np.linalg.norm(err[:, :2], axis=1)
     return {
-        "xyz_mae_cm": round(float(np.abs(err).mean()) * 100, 3),
+        "x_mae_cm": round(float(np.abs(err[:, 0]).mean()) * 100, 3),
+        "y_mae_cm": round(float(np.abs(err[:, 1]).mean()) * 100, 3),
+        "z_mae_cm": round(float(np.abs(err[:, 2]).mean()) * 100, 3),
         "euclidean_mean_cm": round(float(eucl.mean()) * 100, 3),
         "euclidean_median_cm": round(float(np.median(eucl)) * 100, 3),
+        "xy_mean_cm": round(float(xy.mean()) * 100, 3),
         "pct_below_1cm": round(float((eucl < 0.01).mean()) * 100, 1),
         "pct_below_2cm": round(float((eucl < 0.02).mean()) * 100, 1),
         "pct_below_4cm": round(float((eucl < 0.04).mean()) * 100, 1),
@@ -144,7 +149,11 @@ def main() -> None:
     tr, te = idx[:ntr], idx[ntr + nval:]               # train vs held-out (val reserved)
 
     result = {"probe": "frozen_spatial", "n": n, "n_train": len(tr), "n_heldout": len(te),
-              "target": "red_cube_xyz_world", "representations": {}}
+              "target": "red_cube_xyz_world",
+              "note": "initial-scene (arm-at-home) red-cube localization; z ~constant so "
+                      "xy is the meaningful axis; dynamic-state spatial-token probe is future work",
+              "constant_mean_baseline": _metrics(np.tile(tgt[tr].mean(0), (len(te), 1)), tgt[te]),
+              "representations": {}}
     result["representations"]["raw_pixels_cnn"] = {
         "dim": "3x64x64", "cnn": fit_cnn(raw[tr], tgt[tr], raw[te], tgt[te])}
     result["representations"]["frozen_vision_encoder_meanpool"] = {

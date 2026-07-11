@@ -276,3 +276,80 @@ PYTORCH_ENABLE_MPS_FALLBACK=1 MUJOCO_GL=glfw .venv/bin/python -m scripts.frozen_
 MUJOCO_GL=glfw .venv/bin/python -m scripts.markovity                 # oracle-phase / reactive-label controls
 MUJOCO_GL=glfw .venv/bin/python -m scripts.perturbation_recovery     # covariate-shift clincher
 ```
+
+## Milestone 4: controlled privileged-MLP DAgger validation (`scripts/controlled_dagger_mlp.py`)
+
+Diagnostic exception to the DAgger freeze (privileged MLP only, no SmolVLA).
+Retrain-from-scratch each round; learner-only evaluation; on-policy states labelled
+by the stateless reactive expert; stage-balanced caps; 3 seeds.
+
+**Expert-takeover recoverability (mandatory prerequisite)** — can the reactive
+expert finish from the learner's visited states? By stage: approach 1.0,
+near_grasp 1.0, lift 1.0, carry 1.0, dest_approach 1.0, release 0.8. → the reactive
+expert is a **valid recovery oracle**; DAgger labels are meaningful.
+
+**DAgger learning curve — success/4 by round:**
+
+| seed | r0 | r1 | r2 | r3 | r4 | r5 |
+|------|----|----|----|----|----|----|
+| 0 | 1 | 4 | 4 | 4 | 4 | 4 |
+| 1 | 0 | 3 | 2 | 4 | 4 | 4 |
+| 2 | 2 | 4 | 4 | 4 | 4 | 4 |
+
+All three seeds reach **stable 4/4** for ≥2 consecutive rounds at the canonical 4 cm
+radius, learner-only. Mean expert-disagreement falls with rounds (seed0 0.75→0.04).
+
+**Controls at matched size (N≈5004) and matched optimizer updates, 3 seeds:**
+
+| control | success/4 (per seed) |
+|---|---|
+| A demos-only, oversampled to N | 1, 1, 1 |
+| B demos + fixed random-perturbation recovery | 0, 0, 0 |
+| **C true on-policy DAgger aggregation** | **4, 4, 4** |
+
+→ The fix is **specifically learner-induced on-policy state coverage**, not data
+quantity (A) and not off-policy perturbation noise (B). This causally confirms the
+covariate-shift diagnosis: aggregating exactly the states the learner visits turns
+the privileged policy from 1/4 into stable 4/4.
+
+### Corrected frozen-feature probe (render bug fixed)
+
+`frozen_probe.py` had rendered the raw image before `update_scene`, so the raw-CNN
+control used a stale prior scene. Fixed. Corrected held-out cube-**xy** localization
+(z is constant; constant-mean baseline = 4.46 cm):
+
+| representation | probe | xy mean | <2 cm |
+|---|---|---|---|
+| raw pixels 64² | cnn | **0.44 cm** | 98% |
+| frozen vision-encoder (mean-pool) | mlp | 1.61 cm | 75% |
+| frozen connector (mean-pool) | mlp | 1.61 cm | 78% |
+
+Revised reading: the **image contains the cube position to ~0.44 cm**; mean-pooled
+frozen features give ~1.6 cm — adequate for the 4 cm task but 4× the raw-CNN. Mean
+pooling discards token-grid position, so this does **not** prove the frozen features
+are worse; a **spatial-token probe** is required before concluding anything about
+the frozen visual path. State only: "initial-scene red-cube xy is decodable from
+mean-pooled frozen features."
+
+### Decision-tree outcome and exact next experiment
+
+DAgger reached stable 4/4 → **on-policy recovery coverage fixes the privileged
+control failure.** This does NOT yet mean SmolVLA will pass. Per the decision tree:
+
+1. **Next: image/state CNN policy trained on the exact same DAgger states + reactive
+   labels.** Establishes whether image-based control benefits from the same recovery
+   distribution (the raw CNN already localizes to 0.44 cm, so it has the perceptual
+   capacity).
+2. Then a narrowly-scoped command-0 SmolVLA DAgger (M5 only, 4 scenes, fixed seeds,
+   corrected loss + canonical loader, per-round checkpoints, originals retained,
+   on-policy image/state observations labelled by the reactive expert).
+3. The dynamic spatial-token probe (attention/conv over the token grid, dynamic
+   states) resolves the frozen-vs-raw perception gap; run it alongside.
+
+Compression / pruning / distillation / H200 remain frozen. The SmolVLA trainability
+sweep stays deferred: recovery distribution — not vision unfreezing — is the
+demonstrated lever.
+
+```bash
+MUJOCO_GL=glfw .venv/bin/python -m scripts.controlled_dagger_mlp   # privileged DAgger validation
+```
