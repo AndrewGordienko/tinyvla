@@ -163,6 +163,15 @@ If that port is busy, choose another:
 python3 -m tinyvla.dashboard --port 8767
 ```
 
+Interview-facing recorded controller demo (deterministic four-scene replay):
+
+```bash
+MUJOCO_GL=glfw .venv/bin/python -m tinyvla.interview_demo --port 8768
+```
+
+See [docs/interview_project.md](docs/interview_project.md) for the honest
+results table, reproduction commands, and current promotion status.
+
 For pruning checks, compare a candidate against the 450M teacher:
 
 ```bash

@@ -408,6 +408,10 @@ def four_scene_dagger(scenes, cfg, seed, device, rounds, steps, cap, replan, vid
     progress = {"status": "training", "seed": seed, "config": cfg, "replan_actions": replan,
                 "learning_rate": lr, "rounds": [], "videos": []}
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir = output_path.with_suffix("")
+    checkpoint_dir = Path(str(checkpoint_dir) + "_checkpoints")
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    best_success = -1
     output_path.write_text(json.dumps(progress, indent=2) + "\n")
     for rnd in range(rounds):
         net, norm = train_policy(aggregate, cfg, seed, device, steps, lr=lr)
@@ -422,6 +426,18 @@ def four_scene_dagger(scenes, cfg, seed, device, rounds, steps, cap, replan, vid
                     additions[key].extend(v[key] for v in visited)
         curve.append({"round": rnd, "train_size": len(aggregate["state"]), "new_learner_states": len(additions["state"]),
                       **_summary(rows), "per_scene": rows})
+        checkpoint = checkpoint_dir / f"round{rnd}.pt"
+        torch.save({"state_dict": {k: v.detach().cpu() for k, v in net.state_dict().items()},
+                    "normalization": tuple(np.asarray(v).tolist() for v in norm), "round": rnd,
+                    "success": curve[-1]["success"]}, checkpoint)
+        if curve[-1]["success"] > best_success:
+            best_success = curve[-1]["success"]
+            best = checkpoint_dir / "best.pt"
+            torch.save({"state_dict": {k: v.detach().cpu() for k, v in net.state_dict().items()},
+                        "normalization": tuple(np.asarray(v).tolist() for v in norm), "round": rnd,
+                        "success": best_success}, best)
+        progress["best_success"] = best_success
+        progress["best_checkpoint"] = str(checkpoint_dir / "best.pt")
         progress["rounds"] = curve
         progress["last_completed"] = {"round": rnd, "phase": "learner_rollouts"}
         output_path.write_text(json.dumps(progress, indent=2) + "\n")
