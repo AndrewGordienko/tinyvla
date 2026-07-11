@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -11,7 +12,7 @@ from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 
 from .eval_closedloop import evaluate_closed_loop
 from .paths import ARTIFACTS_ROOT
-from .runtime import experiment_metadata, load_runtime
+from .runtime import experiment_metadata, load_runtime, sha256_file, sha256_tree
 
 
 def _manifest_positions(root: Path) -> dict[tuple[int, int], dict[str, np.ndarray]]:
@@ -29,7 +30,7 @@ def _manifest_positions(root: Path) -> dict[tuple[int, int], dict[str, np.ndarra
     }
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
     parser.add_argument("--repo-id", default="local/truth_gate_command0_4")
@@ -42,6 +43,11 @@ def main() -> None:
     parser.add_argument("--held-out", type=int, default=20)
     parser.add_argument(
         "--output", default=str(ARTIFACTS_ROOT / "truth_harness" / "latest_gates.json")
+    )
+    parser.add_argument(
+        "--report-only", action="store_true",
+        help="Always exit 0 and just write the report; by default a failed gate exits 1 "
+             "so CI/shell pipelines cannot mistake a failing model for a passing one.",
     )
     args = parser.parse_args()
 
@@ -79,6 +85,15 @@ def main() -> None:
         "model": str(Path(args.model).resolve()),
         "action_semantics": runtime.action_semantics,
         "load_report": runtime.load_report,
+        "artifacts": {
+            # content fingerprints so a result bundle is independently reproducible
+            "checkpoint_sha256": sha256_tree(args.model, patterns=("*.safetensors", "*.json")),
+            "dataset_manifest_sha256": sha256_file(root / "scene_manifest.json"),
+            "repo_id": args.repo_id,
+            "dataset_root": str(root.resolve()),
+            "held_out_scenes": args.held_out,
+            "cap": args.cap,
+        },
         "four_scene_overfit": overfit,
         "held_out": held_out,
         "thresholds": {
@@ -93,6 +108,17 @@ def main() -> None:
     output.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
 
+    passed = result["thresholds"]["passed"]
+    if not passed and not args.report_only:
+        print(
+            f"GATE FAILED: four_scene_overfit={overfit['success_rate']:.0%} "
+            f"(need >=95%), held_out={held_out['success_rate']:.0%} (need >=80%)",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"GATE {'PASSED' if passed else 'FAILED (report-only)'}", file=sys.stderr)
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

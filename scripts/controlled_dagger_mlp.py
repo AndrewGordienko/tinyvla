@@ -248,11 +248,17 @@ def main() -> None:
                           "mean_min_dist": round(float(np.mean([r["min_dist"] for r in rolls])), 4),
                           "first_fail_stages": [r["first_fail_stage"] for r in rolls],
                           "takeover_rate": tk_rate,
-                          "stage_dist": {s: a_stage.count(s) for s in STAGES}})
+                          # stage distribution of the CAPPED training set actually used
+                          # this round (counts tracks kept rows), not the uncapped aggregate
+                          "stage_dist": {s: counts.get(s, 0) for s in STAGES}})
             last_keep = keep
-            for v in visited_all:
-                a_feat.append(v["feat"]); a_lab.append(v["expert"]); a_snap.append(v["snapshot"])
-                a_stage.append(v["stage"]); a_src.append("dagger"); a_round.append(rnd)
+            # Only aggregate for a round that will actually be trained on. Appending
+            # after the final round grows the aggregate with states no model ever sees
+            # (last_keep/export/held-out all use this round's keep), so skip it.
+            if rnd < args.rounds - 1:
+                for v in visited_all:
+                    a_feat.append(v["feat"]); a_lab.append(v["expert"]); a_snap.append(v["snapshot"])
+                    a_stage.append(v["stage"]); a_src.append("dagger"); a_round.append(rnd)
         dagger[str(seed)] = curve
         ctrl_N.append(curve[-1]["train_size"])           # winning model's ACTUAL training size
         per_round_takeover[str(seed)] = [c["takeover_rate"] for c in curve]

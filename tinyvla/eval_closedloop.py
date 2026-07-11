@@ -93,12 +93,17 @@ def evaluate_closed_loop(
                         if delta_actions:
                             action = action + env.data.qpos[:6].astype(action.dtype)
                         env.step(action)
-                        dmin = min(dmin, float(np.linalg.norm(env.ee_pos() - env.cube_pos())))
+                        # Distance to the ACTIVE sub-task's cube, derived from scene
+                        # state — for two-step commands a learned policy never advances
+                        # step_idx, so env.cube_pos() (target_color) would keep measuring
+                        # the first cube even while the policy delivers the second.
+                        active_color = env.active_subtask()[0]
+                        dmin = min(dmin, float(np.linalg.norm(env.ee_pos() - env.cube_pos(active_color))))
                         hold = hold + 1 if env.success() else 0
                         if stop_on_success and hold >= dwell:
                             break
                     succeeded = int(env.success())
-                    final_dist = float(np.linalg.norm(env.ee_pos() - env.cube_pos()))
+                    final_dist = float(np.linalg.norm(env.ee_pos() - env.cube_pos(env.active_subtask()[0])))
                     successes.append(succeeded)
                     min_dists.append(dmin)
                     final_dists.append(final_dist)

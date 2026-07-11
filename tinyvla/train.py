@@ -76,9 +76,15 @@ def main():
                          "relative to --lr. Use ~0.1 when unfreezing (--trainable brain/brain_visual/all) "
                          "so the expert adapts fast while the backbone moves gently.")
     ap.add_argument("--warmup-steps", type=int, default=0,
-                    help="Linear LR warmup over this many steps (0=off). Recommended (~500) when "
-                         "unfreezing the backbone: early expert gradients are noise and will wreck "
-                         "pretrained features at full LR.")
+                    help="Linear LR warmup over this many steps (0=off), used only with "
+                         "--scheduler linear. Recommended (~500) when unfreezing the backbone: "
+                         "early expert gradients are noise and will wreck pretrained features "
+                         "at full LR.")
+    ap.add_argument("--scheduler", choices=("config", "linear", "none"), default="config",
+                    help="LR schedule: 'config' (default) = SmolVLA's own cosine-decay-with-warmup "
+                         "preset, which LeRobot auto-scales to --steps when the run is shorter than "
+                         "the configured 30k decay horizon; 'linear' = legacy --warmup-steps linear "
+                         "warmup then flat; 'none' = constant LR.")
     ap.add_argument("--init-from", default=None,
                     help="Warm-start from this checkpoint dir instead of smolvla_base "
                          "(e.g. the previous DAgger round) — later rounds then need fewer steps.")
@@ -131,6 +137,14 @@ def main():
     trainable_parameters = [p for p in policy.parameters() if p.requires_grad]
     if not trainable_parameters:
         raise SystemExit(f"no trainable parameters for --trainable {args.trainable}")
+    # Use SmolVLA's own optimizer recipe (betas=(0.9, 0.95), weight_decay~1e-10,
+    # eps=1e-8, grad-clip=10) rather than PyTorch's AdamW defaults (betas=(0.9, 0.999),
+    # weight_decay=0.01). On a small-data overfit that difference is material and can
+    # be the difference between fitting four scenes and not.
+    opt_preset = policy.config.get_optimizer_preset()
+    grad_clip_norm = opt_preset.grad_clip_norm
+    adamw_kwargs = dict(betas=opt_preset.betas, eps=opt_preset.eps,
+                        weight_decay=opt_preset.weight_decay)
     if args.backbone_lr_scale != 1.0:
         backbone, head = [], []
         for name, p in policy.named_parameters():
@@ -139,13 +153,23 @@ def main():
         opt = torch.optim.AdamW([
             {"params": head, "lr": args.lr},
             {"params": backbone, "lr": args.lr * args.backbone_lr_scale},
-        ])
+        ], **adamw_kwargs)
         print(f"discriminative LR: head {sum(p.numel() for p in head)/1e6:.0f}M @ {args.lr:g}, "
               f"backbone {sum(p.numel() for p in backbone)/1e6:.0f}M @ {args.lr * args.backbone_lr_scale:g}")
     else:
-        opt = torch.optim.AdamW(trainable_parameters, lr=args.lr)
-    sched = (torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / args.warmup_steps))
-             if args.warmup_steps > 0 else None)
+        opt = torch.optim.AdamW(trainable_parameters, lr=args.lr, **adamw_kwargs)
+    print(f"optimizer AdamW betas={opt_preset.betas} eps={opt_preset.eps:g} "
+          f"weight_decay={opt_preset.weight_decay:g} grad_clip={grad_clip_norm:g} | "
+          f"scheduler={args.scheduler}")
+    if args.scheduler == "config":
+        # LeRobot's CosineDecayWithWarmupScheduler auto-scales warmup/decay when
+        # --steps is shorter than the configured 30k decay horizon, so short overfit
+        # runs still warm up and decay proportionally instead of at a flat peak LR.
+        sched = policy.config.get_scheduler_preset().build(opt, num_training_steps=args.steps)
+    elif args.scheduler == "linear" and args.warmup_steps > 0:
+        sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / args.warmup_steps))
+    else:
+        sched = None
 
     policy.train()
     print(f"training SmolVLA ({trainable_params/1e6:.0f}M trainable params, "
@@ -166,7 +190,7 @@ def main():
         with amp:
             loss, _ = policy.forward(batch)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(trainable_parameters, 10.0)
+        torch.nn.utils.clip_grad_norm_(trainable_parameters, grad_clip_norm)
         opt.step()
         if sched is not None:
             sched.step()

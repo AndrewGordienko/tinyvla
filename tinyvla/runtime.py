@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import platform
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from importlib.metadata import PackageNotFoundError, version
@@ -106,15 +108,58 @@ def git_dirty() -> bool | None:
         return None
 
 
+def sha256_file(path: str | Path) -> str | None:
+    """Streamed SHA-256 of a single file, or None if it is missing."""
+    path = Path(path)
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_tree(root: str | Path, patterns: tuple[str, ...] = ("*",)) -> str | None:
+    """Order-independent SHA-256 over matching files in a directory tree.
+
+    Hashes each file's repo-relative path plus its content digest, so the result
+    is a stable fingerprint of a checkpoint or dataset directory. Returns None if
+    the root does not exist.
+    """
+    root = Path(root)
+    if not root.exists():
+        return None
+    if root.is_file():
+        return sha256_file(root)
+    entries = []
+    for file in sorted(p for p in root.rglob("*") if p.is_file()):
+        rel = file.relative_to(root).as_posix()
+        if any(fnmatch(rel, pattern) or fnmatch(file.name, pattern) for pattern in patterns):
+            entries.append(f"{rel}:{sha256_file(file)}")
+    digest = hashlib.sha256("\n".join(entries).encode()).hexdigest()
+    return digest
+
+
 def experiment_metadata(*, seed: int | None = None) -> dict[str, Any]:
     return {
         "git_sha": git_sha(),
         "git_dirty": git_dirty(),
+        "command": [sys.executable, *sys.argv],
         "versions": installed_versions(),
         "python": platform.python_version(),
         "platform": platform.platform(),
+        "torch_device": _default_torch_device(),
         "seed": seed,
     }
+
+
+def _default_torch_device() -> str:
+    if torch.cuda.is_available():
+        return f"cuda:{torch.cuda.get_device_name(0)}"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 def write_action_semantics(path: str | Path, semantics: ActionSemantics) -> None:

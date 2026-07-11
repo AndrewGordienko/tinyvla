@@ -170,6 +170,18 @@ class SO101PickPlaceTask:
     def cube_pos(self, color=None):
         return self.data.xpos[self.cube_bid[color or self.target_color]].copy()
 
+    def active_subtask(self):
+        """First not-yet-completed (color, dest) step, derived purely from the
+        current scene state (which cubes are already at their destination). Mirrors
+        reactive_action's sub-goal selection. A learned controller never advances
+        ``step_idx`` (only the scripted expert does), so for multi-step commands
+        ``target_color`` would stay pinned to the first cube; use this in eval so
+        distance metrics track the cube the policy should currently be moving."""
+        for c, d in self.steps:
+            if not self._at_dest(c, d):
+                return c, d
+        return self.steps[-1]
+
     def _dest_xy(self, dest, color):
         if dest == "stack":
             return self.cube_pos(other_color(color))[:2]
