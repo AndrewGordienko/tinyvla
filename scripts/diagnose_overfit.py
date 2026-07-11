@@ -27,7 +27,7 @@ import numpy as np
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.utils.constants import ACTION
 
-from tinyvla.task import SO101PickPlaceTask, COMMANDS, GRASP_RADIUS
+from tinyvla.task import SO101PickPlaceTask, COMMANDS, GRASP_RADIUS, GRIP_GRAB
 from tinyvla.runtime import detect_action_semantics
 
 JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
@@ -91,31 +91,54 @@ def gate_a_expert_replay(repo_id: str, root: Path) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Gate B: normalization round-trip (checkpoint stats vs dataset stats)
+# Gate B: numerical action round-trip  physical -> normalize -> postprocess
 # --------------------------------------------------------------------------- #
-def gate_b_roundtrip(model: str, repo_id: str, root: Path, device: str) -> dict:
+def gate_b_roundtrip(model: str, repo_id: str, root: Path, device: str,
+                     tol: float = 1e-4, batches: int = 8) -> dict:
+    """Verify physical action == postprocess(preprocess(physical action)) per dim.
+
+    Comparing checkpoint stats to dataset stats (done separately below) is
+    necessary but is NOT a round-trip. This runs real dataset samples through the
+    actual preprocessor normalizer and postprocessor unnormalizer and requires the
+    recovered physical action to match the original within `tol`, per action
+    dimension, over valid (unpadded) timesteps only.
+    """
+    from torch.utils.data import DataLoader
+    from tinyvla.fast_dataset import FastChunkDataset
     from tinyvla.runtime import load_runtime
+    from tinyvla.determinism import make_generator
+
     meta = LeRobotDatasetMetadata(repo_id, root=str(root))
     r = load_runtime(model, meta=meta, dataset_root=str(root), device=device, stats_source="checkpoint")
-    ckpt_stats = None
-    for step in r.preprocessor.steps:
-        st = getattr(step, "stats", None)
-        if st and ACTION in st:
-            ckpt_stats = st[ACTION]
+    pre, post = r.preprocessor, r.postprocessor
+    cs = r.policy.config.chunk_size
+    dt = {"action": [i / meta.fps for i in range(cs)]}
+    ds = FastChunkDataset(repo_id, root=str(root), delta_timestamps=dt)
+    dl = DataLoader(ds, batch_size=4, shuffle=False, generator=make_generator(0), drop_last=True)
+
+    per_dim_err = np.zeros(6)
+    valid_count = 0
+    pad_count = 0
+    for bi, raw in enumerate(dl):
+        if bi >= batches:
             break
-    ds_stats = meta.stats[ACTION]
-    fields = {}
-    max_delta = 0.0
-    for key in ("mean", "std", "min", "max"):
-        if ckpt_stats is not None and key in ckpt_stats and key in ds_stats:
-            c = np.asarray(ckpt_stats[key]).ravel()
-            d = np.asarray(ds_stats[key]).ravel()
-            delta = float(np.abs(c - d).max())
-            max_delta = max(max_delta, delta)
-            fields[key] = {"max_abs_delta": delta}
+        original = np.asarray(raw["action"])[:, :, :6]              # physical, from dataset
+        pad = np.asarray(raw["action_is_pad"]).astype(bool)         # (B, cs)
+        b = pre(dict(raw))
+        recovered = post(b[ACTION]).detach().cpu().numpy()[:, :, :6]
+        err = np.abs(recovered - original)                          # (B, cs, 6)
+        valid = ~pad
+        for d in range(6):
+            per_dim_err[d] = max(per_dim_err[d], err[:, :, d][valid].max())
+        valid_count += int(valid.sum())
+        pad_count += int(pad.sum())
     del r
-    return {"gate": "B_roundtrip", "checkpoint": model, "stats_max_abs_delta": max_delta,
-            "fields": fields, "pass": max_delta < 1e-6}
+    per_dim = {JOINTS[d]: round(float(per_dim_err[d]), 8) for d in range(6)}
+    max_err = float(per_dim_err.max())
+    return {"gate": "B_roundtrip", "checkpoint": model, "tol": tol,
+            "action_dim_order": JOINTS, "valid_timesteps": valid_count, "padded_timesteps": pad_count,
+            "per_dim_max_abs_roundtrip_err": per_dim, "max_abs_roundtrip_err": round(max_err, 8),
+            "pass": max_err < tol}
 
 
 # --------------------------------------------------------------------------- #
@@ -169,8 +192,18 @@ def gate_c_single_batch(repo_id: str, root: Path, device: str, steps: int, lr: f
 
 
 # --------------------------------------------------------------------------- #
-# Gate P: per-dimension open-loop error of a trained checkpoint
+# Gate P: corrected per-dimension open-loop error of a trained checkpoint
+#   - masks action_is_pad (never scores padded future timesteps)
+#   - separates the executed prefix 0:n_action_steps from the unused tail
+#   - reports timestep 0 and per-horizon error
+#   - reports raw AND actuator-clipped predictions
+#   - range-normalizes per-dim error (raw radians are not comparable)
+#   - gripper: open/closed classification vs GRIP_GRAB, not raw radians
 # --------------------------------------------------------------------------- #
+def _mae_masked(err: np.ndarray, valid: np.ndarray) -> float:
+    return float(err[valid].mean()) if valid.any() else float("nan")
+
+
 def gate_p_perdim(model: str, repo_id: str, root: Path, device: str, batches: int) -> dict:
     import torch
     from torch.utils.data import DataLoader
@@ -180,14 +213,18 @@ def gate_p_perdim(model: str, repo_id: str, root: Path, device: str, batches: in
 
     seed_everything(0)
     dev = torch.device(device)
+    env = SO101PickPlaceTask()
+    lo, hi = env.ctrl_range[:, 0], env.ctrl_range[:, 1]
+    rng6 = (hi - lo)[:6]
     meta = LeRobotDatasetMetadata(repo_id, root=str(root))
     r = load_runtime(model, meta=meta, dataset_root=str(root), device=dev, stats_source="checkpoint")
     pol, pre, post = r.policy.eval(), r.preprocessor, r.postprocessor
     cs = pol.config.chunk_size
+    nstep = int(pol.config.n_action_steps)
     dt = {"action": [i / meta.fps for i in range(cs)]}
     ds = FastChunkDataset(repo_id, root=str(root), delta_timestamps=dt)
     dl = DataLoader(ds, batch_size=4, shuffle=True, generator=make_generator(0), drop_last=True)
-    errs, preds, tgts = [], [], []
+    P_raw, P_clip, T, PAD = [], [], [], []
     with torch.inference_mode():
         for bi, raw in enumerate(dl):
             if bi >= batches:
@@ -195,22 +232,68 @@ def gate_p_perdim(model: str, repo_id: str, root: Path, device: str, batches: in
             b = pre(dict(raw))
             noise = torch.randn((b[ACTION].shape[0], cs, pol.config.max_action_dim), device=dev)
             pred = post(pol.predict_action_chunk(b, noise=noise)).cpu().numpy()[:, :, :6]
-            tgt = post(b[ACTION]).cpu().numpy()[:, :, :6]
-            errs.append(np.abs(pred - tgt)); preds.append(pred); tgts.append(tgt)
-    E, P, T = np.concatenate(errs), np.concatenate(preds), np.concatenate(tgts)
-    per_dim = {JOINTS[d]: {"mae": round(float(E[:, :, d].mean()), 4),
-                           "max_abs": round(float(E[:, :, d].max()), 4),
-                           "tgt_range": [round(float(T[:, :, d].min()), 3), round(float(T[:, :, d].max()), 3)],
-                           "pred_range": [round(float(P[:, :, d].min()), 3), round(float(P[:, :, d].max()), 3)]}
-               for d in range(6)}
-    closed = T[:, :, 5] < 0.5
-    left_open = P[:, :, 5] > 0.5
+            P_raw.append(pred)
+            P_clip.append(np.clip(pred, lo[:6], hi[:6]))
+            T.append(np.asarray(raw["action"])[:, :, :6])           # physical target
+            PAD.append(np.asarray(raw["action_is_pad"]).astype(bool))
+    Praw, Pclip, Tt, Pad = (np.concatenate(x) for x in (P_raw, P_clip, T, PAD))
+    valid = ~Pad                                                    # (N, cs)
+    exec_mask = np.zeros_like(valid); exec_mask[:, :nstep] = True; exec_mask &= valid
+    tail_mask = np.zeros_like(valid); tail_mask[:, nstep:] = True; tail_mask &= valid
+    t0_mask = np.zeros_like(valid); t0_mask[:, 0] = True; t0_mask &= valid
+
+    def dimtable(pred):
+        err = np.abs(pred - Tt)
+        out = {}
+        for d in range(6):
+            vmask = valid
+            out[JOINTS[d]] = {
+                "mae_all_valid": round(_mae_masked(err[:, :, d], vmask), 4),
+                "mae_exec_prefix": round(_mae_masked(err[:, :, d], exec_mask), 4),
+                "mae_tail": round(_mae_masked(err[:, :, d], tail_mask), 4),
+                "mae_t0": round(_mae_masked(err[:, :, d], t0_mask), 4),
+                "range_norm_mae_exec": round(_mae_masked(err[:, :, d], exec_mask) / float(rng6[d]), 4),
+            }
+        return out
+
+    # per-horizon overall MAE (valid only), arm vs gripper
+    horizon = []
+    for k in range(cs):
+        vk = valid[:, k]
+        if not vk.any():
+            continue
+        earm = np.abs(Pclip[:, k, :5] - Tt[:, k, :5])[vk].mean()
+        egrip = np.abs(Pclip[:, k, 5] - Tt[:, k, 5])[vk].mean()
+        horizon.append({"h": k, "arm_mae": round(float(earm), 4), "gripper_mae": round(float(egrip), 4)})
+
+    # gripper open/closed classification on the EXECUTED prefix (clipped pred)
+    tgt_closed = (Tt[:, :, 5] < GRIP_GRAB) & exec_mask
+    pred_closed = (Pclip[:, :, 5] < GRIP_GRAB) & exec_mask
+    tp = int((tgt_closed & pred_closed).sum())
+    fp = int((~tgt_closed & pred_closed & exec_mask).sum())
+    fn = int((tgt_closed & ~pred_closed & exec_mask).sum())
+    tn = int((~tgt_closed & ~pred_closed & exec_mask).sum())
+    prec = tp / (tp + fp) if tp + fp else None
+    rec = tp / (tp + fn) if tp + fn else None
+    f1 = (2 * prec * rec / (prec + rec)) if prec and rec else None
+    should_close = int(tgt_closed.sum())
+    should_open = int((~(Tt[:, :, 5] < GRIP_GRAB) & exec_mask).sum())
     del r
-    return {"gate": "P_perdim", "checkpoint": model, "overall_mae": round(float(E.mean()), 4),
-            "overall_max_abs_dim": JOINTS[int(np.unravel_index(E.argmax(), E.shape)[2])],
-            "per_dim": per_dim,
-            "grasp_frames_frac": round(float(closed.mean()), 3),
-            "gripper_left_open_at_grasp_frac": round(float(left_open[closed].mean()), 3)}
+    return {
+        "gate": "P_perdim", "checkpoint": model, "n_action_steps": nstep,
+        "note": "raw radians not comparable across actuators; see range_norm_mae_exec and gripper classification",
+        "per_dim_clipped": dimtable(Pclip),
+        "per_dim_raw": dimtable(Praw),
+        "gripper_classification_exec_prefix": {
+            "threshold": GRIP_GRAB, "tp": tp, "fp": fp, "fn": fn, "tn": tn,
+            "precision_closed": round(prec, 3) if prec is not None else None,
+            "recall_closed": round(rec, 3) if rec is not None else None,
+            "f1_closed": round(f1, 3) if f1 is not None else None,
+            "pct_should_close_but_open": round(100 * fn / should_close, 1) if should_close else None,
+            "pct_should_open_but_closed": round(100 * fp / should_open, 1) if should_open else None,
+        },
+        "per_horizon": horizon,
+    }
 
 
 def main() -> None:

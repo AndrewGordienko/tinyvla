@@ -1,78 +1,135 @@
-# Four-scene overfit failure — diagnosis
+# Four-scene overfit failure — diagnosis (in progress)
 
-The command-0 four-scene overfit gate fails (0/4). This is a **systematic
-localization of the cause**, not a "train longer" guess. Every gate is
-reproducible via `scripts/diagnose_overfit.py` against the pinned environment.
+The command-0 four-scene overfit gate fails (0/4). **The cause is not yet
+established.** The failure is currently localized to **approach accuracy,
+gripper timing, or their interaction** — this document tracks the experiments
+that will actually discriminate between them. Nothing below rules out frozen
+visual representation, chunk/queue staleness, or gripper calibration until the
+causal counterfactual and corrected-metric tests are complete.
+
+Corrections to the first-pass diagnosis (which overstated the evidence):
+- Old "Gate B round-trip" only compared **stored statistics**, never a real
+  physical→preprocess→postprocess→physical round-trip. Rebuilt as a numerical
+  round-trip below.
+- Old Gates C/P computed action error across the **whole chunk without masking
+  `action_is_pad`** and without separating the executed prefix `0:n_action_steps`
+  from unused future predictions. Raw radians were compared across differently
+  ranged actuators, and out-of-range predictions were called failures even though
+  the environment **clips before simulation**. All corrected below.
+- "Frozen representation ruled out" was a logic error: the action expert being
+  trainable does not mean the frozen VLM has the spatial precision required.
+- "Flow matching smears a bimodal switch" is a **hypothesis**, not a demonstrated
+  mechanism.
+
+Every gate is reproducible via `scripts/diagnose_overfit.py` and
+`scripts/hybrid_rollout.py` against the pinned environment.
 
 Dataset under test: `artifacts/truth_harness/datasets/command0_4`
 (4 command-0 scenes, absolute actions, fps 25, 283 frames).
 Checkpoint under test: `artifacts/truth_harness/checkpoints/command0_overfit_500`
 (base 450M, 500 steps, batch 4, lr 1e-4, `n_action_steps=5`, seed 4242).
 
-## Gate results
+## Gate results (corrected)
 
 | Gate | Question | Result | Verdict |
 |------|----------|--------|---------|
-| **A** expert replay | Do stored dataset actions + reset + replay reproduce success? | **4/4**; min ee→cube ≈ 0.7 cm; grasp fires ~t22 | data / action representation / reset / replay **correct** |
-| **B** normalization | Do checkpoint action stats == dataset stats (train vs eval)? | max abs delta **2e-8** | normalization **consistent**; no train/eval stats drift |
-| trainability | Is the representation frozen? | base ships VLM frozen; **~100M expert trainable** under default `checkpoint` mode | not a frozen-representation problem; already effectively expert-only |
-| **C** single-batch | Can the pipeline drive ONE fixed batch's flow loss → 0? | flow loss **1.82 → ~0.04**; arm MAE ↓; **gripper stays worst dim** | training path **healthy**; gripper hard even to memorize |
-| **P** per-dimension | Which action dimension carries the error on memorized frames? | arm joints MAE **0.04–0.09 rad**; **gripper MAE 0.26–0.30 rad, pred range [−2.8, 2.08]** vs valid [−0.17, 1.2] | **gripper is the dominant failure** |
+| **A** expert replay | Do stored dataset actions + reset + replay reproduce success? | **4/4**; min ee→cube ≈ 0.7 cm | data / action representation / reset / replay **correct** |
+| **B** round-trip (numerical) | Does physical → normalize → postprocess recover the physical action? | per-dim max err **6e-8** (< tol 1e-4), pad-masked | normalization genuinely **invertible** |
+| trainability | Is the representation frozen? | base ships VLM frozen; **~100M expert trainable** by default | not a *fully* frozen model — but the frozen **visual** features are **not** ruled out (see below) |
+| **C** single-batch | Can the pipeline drive ONE fixed batch's flow loss → 0? | flow loss **1.82 → ~0.04** | training path **healthy**, no convergence bug |
+| **P** per-dimension (corrected) | Which dim carries error on the *executed prefix*, pad-masked, range-normalized? | range-norm MAE: arm **0.02–0.06**, gripper **0.28**; gripper closed-F1 **0.70** | gripper is the noisiest dim open-loop — but see counterfactuals |
 
-## Mechanistic conclusion
+### Causal counterfactual rollouts (the decisive test)
 
-The blocker is **not** data, action semantics, normalization, loading, or a
-frozen backbone. It is a combination, dominated by the **gripper**:
+Executed-action components swapped between the learned policy and the scripted
+reactive expert, on the four memorized scenes, canonical 4 cm radius unless noted.
+`scripts/hybrid_rollout.py`.
 
-1. **Gripper prediction (primary).** The gripper target is a near-**bimodal
-   switch** (open ≈ 1.2, closed ≈ −0.17). Flow matching regresses a continuous
-   velocity field and smears this switch: gripper open-loop MAE is 4–8× the arm
-   joints, and integrated predictions overshoot far outside the valid range
-   ([−2.8, 2.08]). It stays the max-error dimension even when overfitting a
-   single batch (Gate C), so it is structurally hard here, not just under-trained.
-2. **Approach accuracy (secondary).** Arm-joint MAE ≈ 0.04–0.09 rad puts the
-   end-effector at ~4 cm closest approach — right on the `GRASP_RADIUS = 0.04`
-   rim. Even a correct gripper close can miss by a few mm.
+| Condition | success | grasped | lifted | mean min ee→cube |
+|-----------|:-------:|:-------:|:------:|:----------------:|
+| **E** all expert (sanity) | **4/4** | 4 | 4 | 0.013 |
+| **C** expert arm + **learned gripper** | **4/4** | 4 | 4 | 0.013 |
+| **A** full learned | 1/4 | 3 | 2 | 0.041 |
+| **D** learned arm + thresholded learned gripper | 1/4 | 3 | 2 | 0.039 |
+| **A @ 5 cm** (non-canonical diagnostic) | 1/4 | 4 | 2 | 0.041 |
+| **B** learned arm + expert gripper | 0/4 | 0 | 0 | 0.026 |
+| n_action_steps = 1 / 5 / 10 (cond A) | 0 / 1 / 2 of 4 | 4/3/4 | 1/2/3 | 0.035 / 0.041 / 0.037 |
 
-Together: the arm arrives at the cube rim but the gripper does not reliably
-close at the grasp instant, so `_update_grasp()` never fires → cube never lifted
-→ 0/4, with closest approach pinned at ~4.1 cm. This matches every observed number.
+Per-scene breakdown of full learned (A): scene1 success; scene0 grasped+lifted but
+**place-fail** (arm fails to carry to bin); scenes 2 & 3 **approach-fail** (arm
+never reaches < 4 cm, min 4.9–5.0 cm). The gripper closes correctly whenever the
+arm gets near (e.g. gripper cmd 0.28 when ee < 4 cm in scene0).
 
-The **grasp radius is not the bug** — do not loosen `GRASP_RADIUS`. A 5 cm
-diagnostic is acceptable to separate approach error from grasp error, but the
-canonical gate stays at 4 cm.
+### CPU vs MPS (`scripts/device_check.py`)
+
+Open-loop chunk divergence on identical seeded inputs: **mean 7e-4 rad**, max
+**0.036 rad on the gripper in one scene**. Negligible for the arm; enough to flip
+a borderline grasp at the 4 cm rim, but not the root cause.
+
+## Mechanistic conclusion (evidence-based)
+
+**The primary blocker is the learned ARM trajectory (approach and carry/place),
+not the gripper and not queue staleness.**
+
+- **The learned gripper is adequate.** Condition C (expert arm + learned gripper)
+  succeeds **4/4** — with a correctly positioned arm, the learned gripper closes,
+  grasps, and places every time. The high open-loop gripper error (Gate P) does
+  **not** break the task, because near the cube the policy has many timesteps and
+  only needs to close once inside the radius.
+- **The learned arm is the deficit.** Full learned (A) reaches only ~4–5 cm and
+  completes 1/4; two scenes stall at ~5 cm (never enters the 4 cm radius) and one
+  is picked but not delivered. The 5 cm diagnostic does **not** rescue it (still
+  1/4), so it is not a few-mm threshold issue — the arm trajectory is broadly
+  imprecise across approach *and* placement.
+- **Queue staleness is not the cause.** `n_action_steps = 10` (≥ `1`) is no worse
+  than fully closed-loop; more stale actions slightly *helps*.
+- Condition B (0/4) is partly a **controller-mismatch artifact**: the reactive
+  expert only closes its gripper when *its* geometry says ee is within 2 cm xy,
+  which the learned arm rarely satisfies — so B is a weaker signal than C. It is
+  still consistent with an arm-localization deficit.
+
+**Not yet ruled out — and now the leading mechanism to test:** whether the arm
+imprecision comes from **under-optimization** (500 steps; Gate C shows arm error
+keeps falling with training) or from **insufficient frozen visual features**
+(the VLM/vision encoder is frozen, which may cap spatial precision). These two
+are what the next experiments must separate. Do **not** claim frozen
+representation is ruled out.
+
+The **grasp radius is not the bug** — do not loosen `GRASP_RADIUS`; the 5 cm run
+is a labelled diagnostic only.
 
 ## Exact next experiment
 
-Attack the gripper directly, then re-run the gate. In priority order:
+Separate under-optimization from insufficient frozen visual features — do not
+just train longer blindly:
 
-1. **More optimization with the gripper in mind.** Train command-0 four scenes
-   to 2000+ steps, saving at 50/100/250/500/1000/2000 and evaluating each
-   deterministically (Gate E). Gate C shows the objective does descend; the arm
-   is already close, so additional steps + the items below should cross the
-   grasp threshold.
-2. **Reduce stale-chunk drift at the grasp instant:** compare
-   `n_action_steps = 1, 5, 10` with identically-seeded flow noise. The gripper
-   switch is time-sensitive; executing 5–10 stale queued actions can walk past
-   the close moment.
-3. **Trainability sweep (separately, not mixed):** `expert` only vs
-   `expert + connector` vs `expert + last-2 text layers` vs full model with a
-   small backbone LR. Record trainable-param counts and results independently.
-4. **Baseline controls (Gate F):** a privileged-state MLP (cube pos + robot
-   state → action) and a small CNN+MLP BC baseline. If these overfit 4 scenes
-   and SmolVLA cannot, the fault is specifically SmolVLA adaptation of the
-   bimodal gripper, not the task or data.
+1. **Baseline controls first (cheapest, most decisive).**
+   - Privileged-state MLP: cube xy + robot state → action chunk. If it overfits
+     the 4 scenes, the task and dynamics are learnable from clean state.
+   - Small image CNN + MLP behavioural-cloning policy. If it overfits from
+     *images* but SmolVLA cannot, the fault is specifically SmolVLA's (frozen)
+     visual adaptation, not the task or observations.
+2. **Trainability sweep (separately, not mixed), short-trajectory first:**
+   `expert` only vs `expert + connector` vs `expert + last-2 text/VLM layers` vs
+   full model with a small backbone LR. Record trainable-param counts and
+   identical-seed results. This directly tests the frozen-visual-features
+   hypothesis for the arm.
+3. **Only if the evidence points to under-optimization:** run the 2000-step
+   command-0 sweep (checkpoints at 50/100/250/500/1000/2000, deterministic eval)
+   and re-check the arm approach/place error.
 
 Only after the four scenes reach 4/4 at the canonical 4 cm radius should the
 450M teacher be established on commands 0–3 (fixed seeds, separate
-selection/test scenes, ≥3 seeds, per-command CIs). Compression stays frozen
-until then.
+selection/test scenes, ≥3 seeds, per-command CIs). Compression / recovery /
+DAgger / H200 stay frozen until then.
 
 ## Reproduce
 
 ```bash
-MUJOCO_GL=glfw .venv/bin/python -m scripts.diagnose_overfit --gate A
-PYTORCH_ENABLE_MPS_FALLBACK=1 MUJOCO_GL=glfw .venv/bin/python -m scripts.diagnose_overfit --gate B
-PYTORCH_ENABLE_MPS_FALLBACK=1 MUJOCO_GL=glfw .venv/bin/python -m scripts.diagnose_overfit --gate C   # slow: trains one batch
-PYTORCH_ENABLE_MPS_FALLBACK=1 MUJOCO_GL=glfw .venv/bin/python -m scripts.diagnose_overfit --gate P
+MUJOCO_GL=glfw .venv/bin/python -m scripts.diagnose_overfit --gate A   # expert replay
+PYTORCH_ENABLE_MPS_FALLBACK=1 MUJOCO_GL=glfw .venv/bin/python -m scripts.diagnose_overfit --gate B   # round-trip
+PYTORCH_ENABLE_MPS_FALLBACK=1 MUJOCO_GL=glfw .venv/bin/python -m scripts.diagnose_overfit --gate C   # single-batch (slow)
+PYTORCH_ENABLE_MPS_FALLBACK=1 MUJOCO_GL=glfw .venv/bin/python -m scripts.diagnose_overfit --gate P   # corrected per-dim
+PYTORCH_ENABLE_MPS_FALLBACK=1 MUJOCO_GL=glfw .venv/bin/python -m scripts.hybrid_rollout   # counterfactuals + nstep
+PYTORCH_ENABLE_MPS_FALLBACK=1 MUJOCO_GL=glfw .venv/bin/python -m scripts.device_check     # CPU vs MPS
 ```
