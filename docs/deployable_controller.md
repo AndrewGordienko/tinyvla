@@ -18,6 +18,39 @@ supervised gate AND the one-seed four-scene gate pass):
 Deployable state everywhere: `qpos6` (incl. gripper joint position) + `qvel6` +
 `prev_action6`. **No grasped bit.**
 
+## Commands and gates
+
+The default command runs only the supervised gate. It does not collect DAgger
+states or evaluate held-out layouts:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 MUJOCO_GL=glfw .venv/bin/python -m scripts.deployable_controller \
+  --configs single_frame,temporal,multiview \
+  --output artifacts/truth_harness/deployable_supervised_gate.json
+```
+
+The JSON records normalized full-model and image-only overfit error plus the
+image-only blank-image, swapped-image, and (for temporal variants) shuffled-frame
+prediction changes. A temporal run must pass before any DAgger command runs.
+
+The one-seed four-scene experiment is explicitly separate and is blocked by that
+saved temporal result. It emits approach, grasp, transport, release, and final
+success independently, and writes all successful plus one representative failing
+rollout video. It does **not** expand layouts or seeds:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 MUJOCO_GL=glfw .venv/bin/python -m scripts.deployable_controller \
+  --four-scene --architecture temporal --seed 0 --rounds 4 --replan-actions 1 \
+  --gate-json artifacts/truth_harness/deployable_supervised_gate.json \
+  --output artifacts/truth_harness/deployable_temporal_seed0.json
+```
+
+For the chunk rung, set `--architecture multiview_chunk --action-chunk 4` (or
+`8`) after the temporal gate passes. Chunks are labelled at **each learner
+state** by snapshotting that state, rolling the reactive expert forward for the
+whole chunk, then restoring the learner simulator. They are never made from a
+later learner trajectory. Evaluation replans after 1–4 predicted actions.
+
 ## 1. Observation audit (`scripts/observation_audit.py`)
 
 | property | value |
