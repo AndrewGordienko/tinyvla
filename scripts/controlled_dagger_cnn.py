@@ -1,12 +1,23 @@
-"""Image/state CNN control: does on-policy recovery survive partial observability?
+"""Image/proprio CNN controller: does on-policy DAgger beat demos-only and
+perturbation controls on HELD-OUT scenes, with deployable observations?
 
-Two experiments (command 0, four memorized scenes, canonical 4 cm, learner-only):
-  I   transfer   train the CNN on the EXACT winning privileged-DAgger states
-                 (rendered images from the exported snapshots) + reactive labels
-  II  on-policy  the CNN runs its OWN DAgger loop (its own rollout distribution)
+Controls (all at matched training size N and matched optimizer updates, 3 seeds,
+command 0, four memorized + `--held-out` random scenes, canonical 4 cm, learner-
+only). Each control is evaluated on memorized AND per-scene held-out (with each
+held-out scene's layout distance to the nearest training scene):
 
-Inputs: front image + qpos + qvel + previous action + grasped flag (grasped is
-privileged and labelled as such). Output: one-step absolute 6-D actuator target.
+  A  demos_only   reactive demos oversampled to N
+  B  perturbation demos + reactive-relabelled perturbation recovery to N
+  C  dagger       the CNN's own on-policy DAgger aggregation (curve by round)
+
+Observation modes:
+  default        image + qpos6 + qvel6 + prev6 + grasped1  (grasped is PRIVILEGED
+                 simulator state — an upper bound, not deployable)
+  --exclude-grasp image + qpos6 + qvel6 + prev6            (all real-arm signals:
+                 joint positions incl. gripper, joint velocities, previous action)
+
+Promotion rule: SmolVLA DAgger is only justified if C beats BOTH A and B on
+held-out scenes in the --exclude-grasp (deployable) condition.
 """
 from __future__ import annotations
 
@@ -20,13 +31,16 @@ import torch
 import torch.nn as nn
 import mujoco
 
-from tinyvla.task import SO101PickPlaceTask, HOME_QPOS
+from tinyvla.task import SO101PickPlaceTask, COMMANDS, HOME_QPOS
 from tinyvla.determinism import seed_everything
 from scripts.controlled_dagger_mlp import stage_of, expert_takeover, held_out_scenes, STAGES, _color
-from scripts.perturbation_recovery import _restore
+from scripts.perturbation_recovery import _restore, reactive_demos as pr_reactive_demos, MAGS
 
 IMG_RENDER, IMG_NET, EP_LEN, DWELL, LIFT_Z = 256, 84, 220, 8, 0.117
-STATE_DIM = 19  # qpos6 + qvel6 + prev6 + grasped1(privileged)
+
+
+def state_dim(include_grasp: bool) -> int:
+    return 19 if include_grasp else 18
 
 
 def render(env, renderer):
@@ -37,26 +51,53 @@ def render(env, renderer):
                                      align_corners=False).squeeze(0).numpy().astype(np.float32)
 
 
-def state_vec(env, prev):
-    g = 1.0 if env.grasped is not None else 0.0
-    return np.concatenate([env.data.qpos[:6], env.data.qvel[:6], prev, [g]]).astype(np.float32)
+def state_vec(env, prev, include_grasp: bool = True):
+    # qpos[:6] includes the gripper JOINT POSITION (measurable); qvel[:6] joint
+    # velocities (measurable); prev = previous commanded action (known). The
+    # grasped bit is privileged simulator state, appended only when include_grasp.
+    parts = [env.data.qpos[:6], env.data.qvel[:6], prev]
+    if include_grasp:
+        parts.append([1.0 if env.grasped is not None else 0.0])
+    return np.concatenate(parts).astype(np.float32)
+
+
+def layout_vec(scene) -> np.ndarray:
+    return np.concatenate([np.asarray(scene["positions"]["red"])[:2],
+                           np.asarray(scene["positions"]["blue"])[:2]]).astype(np.float64)
+
+
+def nearest_train_dist(scene, train_layouts) -> float:
+    v = layout_vec(scene)
+    return float(min(np.linalg.norm(v - t) for t in train_layouts))
+
+
+def fail_stage(r) -> str | None:
+    if r["success"]:
+        return None
+    if not r["grasp"]:
+        return "approach"
+    if not r["lift"]:
+        return "grasp"
+    if not r["carry"]:
+        return "carry"
+    return "place"
 
 
 class ImageStatePolicy(nn.Module):
-    def __init__(self):
+    def __init__(self, sdim: int):
         super().__init__()
         self.cnn = nn.Sequential(
             nn.Conv2d(3, 16, 5, 2, 2), nn.ReLU(), nn.Conv2d(16, 32, 3, 2, 1), nn.ReLU(),
             nn.Conv2d(32, 64, 3, 2, 1), nn.ReLU(), nn.Conv2d(64, 64, 3, 2, 1), nn.ReLU(),
             nn.AdaptiveAvgPool2d(1), nn.Flatten())
-        self.smlp = nn.Sequential(nn.Linear(STATE_DIM, 128), nn.ReLU())
+        self.smlp = nn.Sequential(nn.Linear(sdim, 128), nn.ReLU())
         self.head = nn.Sequential(nn.Linear(64 + 128, 128), nn.ReLU(), nn.Linear(128, 6))
 
     def forward(self, img, st):
         return self.head(torch.cat([self.cnn(img), self.smlp(st)], dim=1))
 
 
-def train_cnn(imgs, states, labels, seed, steps, device, lr=1e-3):
+def train_cnn(imgs, states, labels, seed, steps, device, sdim, lr=1e-3):
     seed_everything(seed)
     dev = torch.device(device)
     smu, ssd = states.mean(0), states.std(0) + 1e-6
@@ -64,7 +105,7 @@ def train_cnn(imgs, states, labels, seed, steps, device, lr=1e-3):
     I = torch.from_numpy(imgs).float()
     S = torch.from_numpy((states - smu) / ssd).float()
     Y = torch.from_numpy((labels - ymu) / ysd).float()
-    net = ImageStatePolicy().to(dev)
+    net = ImageStatePolicy(sdim).to(dev)
     opt = torch.optim.Adam(net.parameters(), lr=lr); lossf = nn.MSELoss()
     bs = min(128, len(I))
     net.train()
@@ -85,7 +126,7 @@ def cnn_predict(net, norm, img, st, device):
     return y * ysd + ymu
 
 
-def cnn_rollout(net, norm, scene, cap, device, collect):
+def cnn_rollout(net, norm, scene, cap, device, collect, include_grasp):
     command = int(scene["command"]); color = _color(command)
     positions = {c: np.asarray(v, float) for c, v in scene["positions"].items()}
     env = SO101PickPlaceTask()
@@ -95,7 +136,7 @@ def cnn_rollout(net, norm, scene, cap, device, collect):
     prev = HOME_QPOS.astype(np.float32)
     dmin, grasp_t, lifted, carried, visited = float("inf"), -1, False, False, []
     for t in range(cap):
-        img = render(env, renderer); st = state_vec(env, prev)
+        img = render(env, renderer); st = state_vec(env, prev, include_grasp)
         action = np.clip(cnn_predict(net, norm, img, st, device), lo, hi).astype(np.float32)
         if collect:
             expert = env.reactive_action(gain=0.25, max_dq=0.03).astype(np.float32)
@@ -117,29 +158,7 @@ def cnn_rollout(net, norm, scene, cap, device, collect):
             "lift": lifted, "carry": carried}, visited
 
 
-def render_from_export(npz, device):
-    """Restore each exported snapshot and render its image + state + label."""
-    d = np.load(npz)
-    env = SO101PickPlaceTask()
-    renderer = mujoco.Renderer(env.model, height=IMG_RENDER, width=IMG_RENDER)
-    imgs, states, labels = [], [], []
-    for i in range(len(d["sample_id"])):
-        snap = {"qpos": d["qpos"][i], "qvel": d["qvel"][i],
-                "grasped": d["grasped"][i] or None,
-                "off_pos": None if np.isnan(d["off_pos"][i]).any() else d["off_pos"][i],
-                "off_quat": None if np.isnan(d["off_quat"][i]).any() else d["off_quat"][i]}
-        env.reset(command=int(d["command"][i]), positions={c: np.asarray([0.2, 0.0]) for c in ("red", "blue")})
-        _restore(env, snap)
-        imgs.append(render(env, renderer))
-        prev = d["feat"][i][22:28]
-        states.append(np.concatenate([d["qpos"][i][:6], d["qvel"][i][:6], prev,
-                                      [1.0 if snap["grasped"] else 0.0]]).astype(np.float32))
-        labels.append(d["label"][i])
-    renderer.close()
-    return np.asarray(imgs, np.float32), np.asarray(states, np.float32), np.asarray(labels, np.float32)
-
-
-def reactive_demo_images(scenes):
+def reactive_demo_images(scenes, include_grasp):
     env = SO101PickPlaceTask()
     renderer = mujoco.Renderer(env.model, height=IMG_RENDER, width=IMG_RENDER)
     imgs, states, labels, stages = [], [], [], []
@@ -150,7 +169,7 @@ def reactive_demo_images(scenes):
         prev = HOME_QPOS.astype(np.float32); dwell = 0
         for _ in range(EP_LEN):
             a = env.reactive_action(gain=0.25, max_dq=0.03).astype(np.float32)
-            imgs.append(render(env, renderer)); states.append(state_vec(env, prev))
+            imgs.append(render(env, renderer)); states.append(state_vec(env, prev, include_grasp))
             labels.append(a); stages.append(stage_of(env, color))
             env.step(a); prev = a
             dwell = dwell + 1 if env.success() else 0
@@ -161,104 +180,187 @@ def reactive_demo_images(scenes):
             np.asarray(labels, np.float32), stages)
 
 
-def _summ(rolls):
-    return {"success": sum(r["success"] for r in rolls), "n": len(rolls),
-            "grasp": sum(r["grasp"] for r in rolls), "lift": sum(r["lift"] for r in rolls),
-            "carry": sum(r["carry"] for r in rolls)}
+def perturbation_images(scenes, mags, k_per, seed, include_grasp):
+    """Render reactive-relabelled perturbation-recovery states (matched to the
+    MLP perturbation control, but as images + deployable proprio)."""
+    _, _, snaps, cmds = pr_reactive_demos(scenes)
+    rng = np.random.default_rng(seed)
+    env = SO101PickPlaceTask()
+    renderer = mujoco.Renderer(env.model, height=IMG_RENDER, width=IMG_RENDER)
+    imgs, states, labels = [], [], []
+    for snap, command in zip(snaps, cmds):
+        for mag in mags:
+            for _ in range(k_per):
+                _restore(env, snap)
+                env.steps = COMMANDS[command]["steps"]; env.step_idx = 0
+                env.data.qpos[:5] += rng.normal(0, mag, 5)   # arm only; gripper untouched
+                mujoco.mj_forward(env.model, env.data)
+                if env.grasped is not None:
+                    env._carry(); mujoco.mj_forward(env.model, env.data)
+                prev = env.data.qpos[:6].astype(np.float32)
+                a = env.reactive_action(gain=0.25, max_dq=0.03).astype(np.float32)
+                imgs.append(render(env, renderer)); states.append(state_vec(env, prev, include_grasp))
+                labels.append(a)
+    renderer.close()
+    return (np.asarray(imgs, np.float32), np.asarray(states, np.float32), np.asarray(labels, np.float32))
 
 
-def evaluate(net, norm, scenes, cap, device):
-    return _summ([cnn_rollout(net, norm, s, cap, device, False)[0] for s in scenes])
+def evaluate_perscene(net, norm, scenes, cap, device, include_grasp, train_layouts=None):
+    rows = []
+    for s in scenes:
+        r, _ = cnn_rollout(net, norm, s, cap, device, False, include_grasp)
+        row = {"success": int(r["success"]), "grasp": int(r["grasp"]), "lift": int(r["lift"]),
+               "carry": int(r["carry"]), "min_dist": r["min_dist"], "fail_stage": fail_stage(r)}
+        if train_layouts is not None:
+            row["layout_dist"] = round(nearest_train_dist(s, train_layouts), 4)
+        rows.append(row)
+    return rows
+
+
+def summarize(rows):
+    n = len(rows)
+    fs = {}
+    for r in rows:
+        if r["fail_stage"]:
+            fs[r["fail_stage"]] = fs.get(r["fail_stage"], 0) + 1
+    return {"n": n, "success": sum(r["success"] for r in rows),
+            "grasp": sum(r["grasp"] for r in rows), "lift": sum(r["lift"] for r in rows),
+            "carry": sum(r["carry"] for r in rows), "fail_stages": fs}
+
+
+def distance_bins(rows, edges=(0.05, 0.10, 0.20)):
+    """Held-out success bucketed by layout distance to the nearest training scene."""
+    labels = [f"<{edges[0]}"] + [f"{edges[i]}-{edges[i+1]}" for i in range(len(edges) - 1)] + [f">={edges[-1]}"]
+    bins = {lab: {"n": 0, "success": 0} for lab in labels}
+    for r in rows:
+        d = r["layout_dist"]
+        idx = len(edges)
+        for i, e in enumerate(edges):
+            if d < e:
+                idx = i; break
+        b = bins[labels[idx]]
+        b["n"] += 1; b["success"] += r["success"]
+    return bins
+
+
+def run_dagger(scenes, ho, seed, args, include_grasp, sdim, Id, Sd, Yd, stg_d, command0):
+    """CNN on-policy DAgger; returns (final_net, final_norm, curve, matched_N)."""
+    aI = [x for x in Id]; aS = [x for x in Sd]; aY = [x for x in Yd]; aStg = list(stg_d)
+    aSrc = ["demo"] * len(Id)
+    curve = []
+    net = norm = None
+    for rnd in range(args.rounds):
+        counts = {}; keep = []
+        for i, s in enumerate(aStg):
+            counts.setdefault(s, 0)
+            if aSrc[i] == "demo" or counts[s] < args.stage_cap:
+                keep.append(i); counts[s] += 1
+        net, norm = train_cnn(np.asarray([aI[i] for i in keep], np.float32),
+                              np.asarray([aS[i] for i in keep], np.float32),
+                              np.asarray([aY[i] for i in keep], np.float32), seed, args.steps, args.device, sdim)
+        rolls, visited = [], []
+        for s in scenes:
+            r, vis = cnn_rollout(net, norm, s, args.cap, args.device, True, include_grasp)
+            rolls.append(r); visited += vis
+        tk = {st: {"n": 0, "rec": 0} for st in STAGES}
+        for v in visited[::12]:
+            tk[v["stage"]]["n"] += 1
+            tk[v["stage"]]["rec"] += int(expert_takeover(v["snapshot"], command0, args.cap))
+        curve.append({"round": rnd, "train_size": len(keep), "new_states": len(visited),
+                      **summarize([{"success": int(r["success"]), "grasp": int(r["grasp"]),
+                                    "lift": int(r["lift"]), "carry": int(r["carry"]),
+                                    "fail_stage": fail_stage(r)} for r in rolls]),
+                      "takeover": {st: (round(tk[st]["rec"] / tk[st]["n"], 2) if tk[st]["n"] else None)
+                                   for st in STAGES}})
+        if rnd < args.rounds - 1:
+            for v in visited:
+                aI.append(v["img"]); aS.append(v["state"]); aY.append(v["expert"])
+                aStg.append(v["stage"]); aSrc.append("dagger")
+    return net, norm, curve, curve[-1]["train_size"]
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default="artifacts/truth_harness/datasets/command0_4")
-    ap.add_argument("--export-dir", default="artifacts/truth_harness/dagger_dataset")
     ap.add_argument("--rounds", type=int, default=5)
     ap.add_argument("--seeds", default="0,1,2")
     ap.add_argument("--steps", type=int, default=4000)
     ap.add_argument("--cap", type=int, default=200)
     ap.add_argument("--stage-cap", type=int, default=500)
     ap.add_argument("--held-out", type=int, default=20)
+    ap.add_argument("--k-per", type=int, default=3, help="perturbations per demo state per magnitude")
     ap.add_argument("--device", default="mps")
+    ap.add_argument("--exclude-grasp", action="store_true",
+                    help="Drop the privileged grasped bit from EVERY controller input "
+                         "(deployable image+proprio condition).")
     ap.add_argument("--output", default="artifacts/truth_harness/controlled_dagger_cnn.json")
     args = ap.parse_args()
     seeds = [int(s) for s in args.seeds.split(",")]
-    dev = args.device
+    include_grasp = not args.exclude_grasp
+    sdim = state_dim(include_grasp)
     scenes = json.loads((Path(args.root) / "scene_manifest.json").read_text())["scenes"]
     ho = held_out_scenes(args.held_out, 0)
+    train_layouts = [layout_vec(s) for s in scenes]
     command0 = int(scenes[0]["command"])
 
-    net_params = sum(p.numel() for p in ImageStatePolicy().parameters())
-    Id, Sd, Yd, stg_d = reactive_demo_images(scenes)
+    net_params = sum(p.numel() for p in ImageStatePolicy(sdim).parameters())
+    Id, Sd, Yd, stg_d = reactive_demo_images(scenes, include_grasp)
+    Ip, Sp, Yp = perturbation_images(scenes, MAGS, args.k_per, 0, include_grasp)
 
-    out = {"cnn_params": int(net_params), "img_net": IMG_NET, "seeds": seeds,
-           "state_note": "grasped flag is privileged (1 bit not visible in a single frame)"}
+    condition = "privileged_grasp" if include_grasp else "deployable_no_grasp"
+    out = {"condition": condition, "cnn_params": int(net_params), "img_net": IMG_NET,
+           "state_dim": sdim, "seeds": seeds, "held_out": args.held_out,
+           "state_composition": ("qpos6+qvel6+prev6" + ("+grasped1(PRIVILEGED)" if include_grasp else "")),
+           "demo_images": int(len(Id)), "perturbation_images": int(len(Ip)),
+           "controls": {}, "dagger_curves": {}, "matched_N": {}}
 
-    # ---- Experiment I: transfer from the exact winning privileged-DAgger aggregate
-    expI = {}
+    t_start = time.time()
     for seed in seeds:
-        npz = Path(args.export_dir) / f"seed{seed}.npz"
-        if not npz.exists():
-            expI[str(seed)] = "missing_export"; continue
-        Ie, Se, Ye = render_from_export(str(npz), dev)
-        t0 = time.time()
-        net, norm = train_cnn(Ie, Se, Ye, seed, args.steps, dev)
-        expI[str(seed)] = {"train_size": int(len(Ie)), "train_s": round(time.time() - t0, 1),
-                           "memorized": evaluate(net, norm, scenes, args.cap, dev),
-                           "held_out": evaluate(net, norm, ho, args.cap, dev)}
-    out["experiment_I_transfer"] = expI
+        net_C, norm_C, curve, N = run_dagger(scenes, ho, seed, args, include_grasp, sdim,
+                                             Id, Sd, Yd, stg_d, command0)
+        out["dagger_curves"][str(seed)] = curve
+        out["matched_N"][str(seed)] = int(N)
 
-    # ---- Experiment II: CNN-specific on-policy DAgger
-    expII = {}
-    for seed in seeds:
-        aI = [x for x in Id]; aS = [x for x in Sd]; aY = [x for x in Yd]; aStg = list(stg_d)
-        aSrc = ["demo"] * len(Id)
-        curve = []
-        for rnd in range(args.rounds):
-            counts = {}; keep = []
-            for i, s in enumerate(aStg):
-                counts.setdefault(s, 0)
-                if aSrc[i] == "demo" or counts[s] < args.stage_cap:
-                    keep.append(i); counts[s] += 1
-            net, norm = train_cnn(np.asarray([aI[i] for i in keep], np.float32),
-                                  np.asarray([aS[i] for i in keep], np.float32),
-                                  np.asarray([aY[i] for i in keep], np.float32), seed, args.steps, dev)
-            rolls, visited = [], []
-            for s in scenes:
-                r, vis = cnn_rollout(net, norm, s, args.cap, dev, True)
-                rolls.append(r); visited += vis
-            # takeover from CNN-visited states (subsampled)
-            tk = {st: {"n": 0, "rec": 0} for st in STAGES}
-            for v in visited[::12]:
-                tk[v["stage"]]["n"] += 1
-                tk[v["stage"]]["rec"] += int(expert_takeover(v["snapshot"], command0, args.cap))
-            curve.append({"round": rnd, "train_size": len(keep), "new_states": len(visited),
-                          **_summ(rolls),
-                          "takeover": {st: (round(tk[st]["rec"] / tk[st]["n"], 2) if tk[st]["n"] else None)
-                                       for st in STAGES}})
-            # Only aggregate for a round that will be trained on; the final round's
-            # collection is never used (net/held-out use this round's keep), so skip it.
-            if rnd < args.rounds - 1:
-                for v in visited:
-                    aI.append(v["img"]); aS.append(v["state"]); aY.append(v["expert"])
-                    aStg.append(v["stage"]); aSrc.append("dagger")
-        ho_final = evaluate(net, norm, ho, args.cap, dev)
-        expII[str(seed)] = {"curve": curve, "held_out": ho_final}
-    out["experiment_II_cnn_dagger"] = expII
+        # A demos-only oversampled to N
+        reps = max(1, N // len(Id))
+        net_A, norm_A = train_cnn(np.tile(Id, (reps, 1, 1, 1)), np.tile(Sd, (reps, 1)),
+                                  np.tile(Yd, (reps, 1)), seed, args.steps, args.device, sdim)
+        # B demos + perturbation to N
+        need = max(0, N - len(Id))
+        idx = np.random.default_rng(seed).integers(0, len(Ip), need) if need else np.array([], int)
+        IB = np.concatenate([Id, Ip[idx]]) if need else Id
+        SB = np.concatenate([Sd, Sp[idx]]) if need else Sd
+        YB = np.concatenate([Yd, Yp[idx]]) if need else Yd
+        net_B, norm_B = train_cnn(IB, SB, YB, seed, args.steps, args.device, sdim)
+
+        for name, net, norm in (("demos_only", net_A, norm_A),
+                                ("perturbation", net_B, norm_B),
+                                ("dagger", net_C, norm_C)):
+            mem = evaluate_perscene(net, norm, scenes, args.cap, args.device, include_grasp)
+            hld = evaluate_perscene(net, norm, ho, args.cap, args.device, include_grasp, train_layouts)
+            out["controls"].setdefault(name, {})[str(seed)] = {
+                "memorized": summarize(mem),
+                "held_out": {**summarize(hld), "by_distance": distance_bins(hld),
+                             "per_scene": hld},
+            }
+
+    out["runtime_min"] = round((time.time() - t_start) / 60, 1)
+
+    # aggregate across seeds
+    agg = {}
+    for name in ("demos_only", "perturbation", "dagger"):
+        mem = sum(out["controls"][name][str(s)]["memorized"]["success"] for s in seeds)
+        hld = sum(out["controls"][name][str(s)]["held_out"]["success"] for s in seeds)
+        agg[name] = {"memorized_of_%d" % (4 * len(seeds)): mem,
+                     "held_out_of_%d" % (args.held_out * len(seeds)): hld}
+    out["aggregate"] = agg
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output).write_text(json.dumps(out, indent=2) + "\n")
-    print(json.dumps({
-        "cnn_params": net_params,
-        "expI_transfer": {s: (expI[s].get("memorized", {}).get("success") if isinstance(expI[s], dict) else expI[s])
-                          for s in expI},
-        "expI_heldout": {s: (expI[s].get("held_out", {}).get("success") if isinstance(expI[s], dict) else None)
-                         for s in expI},
-        "expII_success_by_round": {s: [c["success"] for c in expII[s]["curve"]] for s in expII},
-        "expII_heldout": {s: expII[s]["held_out"]["success"] for s in expII},
-    }, indent=2))
+    print(json.dumps({"condition": condition, "state_dim": sdim, "runtime_min": out["runtime_min"],
+                      "aggregate": agg,
+                      "dagger_final_by_seed": {str(s): out["dagger_curves"][str(s)][-1]["success"] for s in seeds}},
+                     indent=2))
 
 
 if __name__ == "__main__":
