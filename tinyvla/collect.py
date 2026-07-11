@@ -30,17 +30,18 @@ EP_LEN = 220                 # max steps per episode (variable-length; 2-step so
 DWELL = 8                    # extra frames recorded after the command succeeds
 EXPERT = dict(gain=0.25, max_dq=0.03)   # natural pace: ~70-140 frame episodes, full chunk coverage
 
-CAMERAS = ["front"]              # front-only (wrist cam removed: it hurt closed-loop)
+DEFAULT_CAMERAS = ["front"]
+VALID_CAMERAS = {"front", "wrist"}
 
 
-def make_features(use_videos: bool) -> dict:
+def make_features(use_videos: bool, cameras: list[str]) -> dict:
     return {
         "observation.state": {"dtype": "float32", "shape": (6,), "names": JOINT_NAMES},
         "action": {"dtype": "float32", "shape": (6,), "names": JOINT_NAMES},
         **{f"observation.images.{cam}": {"dtype": "video" if use_videos else "image",
                                          "shape": (IMG, IMG, 3),
                                          "names": ["height", "width", "channels"]}
-           for cam in CAMERAS},
+           for cam in cameras},
     }
 
 
@@ -65,8 +66,13 @@ def main():
                     help="Store frames as images (parquet-embedded PNG) instead of AV1 video. "
                          "Bigger on disk but much faster to TRAIN on: video needs a torchcodec "
                          "seek+decode per random sample; images are a cheap PNG decode.")
+    ap.add_argument("--cameras", default=",".join(DEFAULT_CAMERAS),
+                    help="Comma-separated deployable cameras (front,wrist).")
     args = ap.parse_args()
     commands = [int(value) for value in args.commands.split(",") if value]
+    cameras = [value.strip() for value in args.cameras.split(",") if value.strip()]
+    if not cameras or any(camera not in VALID_CAMERAS for camera in cameras):
+        raise SystemExit(f"invalid --cameras {args.cameras!r}; choose from front,wrist")
     if not commands or any(command < 0 or command >= len(COMMANDS) for command in commands):
         raise SystemExit(f"invalid --commands {args.commands!r}")
 
@@ -79,7 +85,7 @@ def main():
     ds = LeRobotDataset.create(
         repo_id=args.repo_id,
         fps=int(env.control_hz),
-        features=make_features(use_videos=not args.no_videos),
+        features=make_features(use_videos=not args.no_videos, cameras=cameras),
         root=args.root,
         robot_type="so101",
         use_videos=not args.no_videos,
@@ -101,7 +107,7 @@ def main():
         dwell = 0
         for t in range(EP_LEN):
             state = env.data.qpos[:6].copy().astype(np.float32)
-            images = {f"observation.images.{cam}": render_cam(env, renderer, cam) for cam in CAMERAS}
+            images = {f"observation.images.{cam}": render_cam(env, renderer, cam) for cam in cameras}
             action = env.expert_action(**EXPERT).astype(np.float32)
             ds.add_frame({
                 "observation.state": state,
@@ -120,7 +126,10 @@ def main():
 
     write_action_semantics(args.root, "delta" if args.delta_actions else "absolute")
     with open(os.path.join(args.root, "scene_manifest.json"), "w") as f:
-        json.dump({"seed": args.seed, "commands": commands, "scenes": scenes}, f, indent=2)
+        json.dump({"seed": args.seed, "commands": commands, "cameras": cameras,
+                   "fps": int(env.control_hz), "image_size": [IMG, IMG],
+                   "action_alignment": "observation_t_action_t",
+                   "scenes": scenes}, f, indent=2)
         f.write("\n")
 
     print(f"\nDone. {args.episodes} episodes, expert success {n_success}/{args.episodes}, "

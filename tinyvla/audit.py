@@ -135,6 +135,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--trainable", choices=TRAINABLE_MODES, default="checkpoint",
                         help="Apply a trainability mode before measuring gradients.")
+    parser.add_argument("--base-checkpoint", action="store_true",
+                        help="Treat --model as an immutable base checkpoint without an action marker.")
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -148,6 +150,7 @@ def main() -> None:
     with contextlib.redirect_stdout(sys.stderr):
         runtime = load_runtime(
             model_path, meta=meta, dataset_root=args.root, device=device, stats_source="dataset"
+            , base_checkpoint=args.base_checkpoint
         )
         policy = runtime.policy
         trainable_params = set_trainable(policy, args.trainable)

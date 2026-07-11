@@ -16,7 +16,7 @@ import mujoco
 from tinyvla.task import SO101PickPlaceTask, GRASP_RADIUS
 from scripts.controlled_dagger_mlp import _color
 
-ROOT = Path("artifacts/truth_harness/datasets/command0_4")
+ROOT = Path("data/datasets/command0_multiview_32")
 IMG = 256
 
 
@@ -73,9 +73,9 @@ def main() -> None:
 
     audit = {
         "cameras_in_model": cams,
-        "dataset_recorded_views": ["observation.images.front"],
+        "dataset_recorded_views": ["observation.images.front", "observation.images.wrist"],
         "smolvla_base_configured_cameras": ["camera1", "camera2", "camera3"],
-        "smolvla_effective_views_here": ["observation.images.front"],
+        "smolvla_effective_views_here": ["observation.images.front", "observation.images.wrist"],
         "current_cnn_views": ["front"],
         "control_hz": env.control_hz,
         "sim_hz": round(1.0 / m.opt.timestep),
