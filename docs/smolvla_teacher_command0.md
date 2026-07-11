@@ -79,9 +79,9 @@ similar endpoint but is more aggressive; `1e-5` converged more slowly.
 The bounded CUDA pilot command, once H200 access is restored, is:
 
 ```bash
-DEVICE=cuda STEPS=500 TOTAL_STEPS=500 BATCH_SIZE=32 NUM_WORKERS=8 \
+DEVICE=cuda TOTAL_STEPS=8000 STOP_AFTER=500 BATCH_SIZE=32 NUM_WORKERS=8 \
 LR=3e-5 SAVE_EVERY=100 EVAL_EVERY=100 \
-OUTPUT_DIR=data/checkpoints/smolvla_teacher_command0_pilot \
+OUTPUT_DIR=data/checkpoints/smolvla_teacher_command0 \
 bash scripts/h200_smolvla_teacher_command0.sh
 ```
 
