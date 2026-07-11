@@ -99,15 +99,18 @@ def state_vec(env, prev):
     return np.concatenate([env.data.qpos[:6], env.data.qvel[:6], prev]).astype(np.float32)
 
 
-def render_views(env, renderers, views):
+def render_views(env, renderers, views, return_times=False):
     out = []
+    times = []
     for v in views:
+        times.append(float(env.data.time))
         renderers[v].update_scene(env.data, camera=v)
         img = renderers[v].render()
         t = torch.from_numpy(img).permute(2, 0, 1).float().div(255.0).unsqueeze(0)
         t = nn.functional.interpolate(t, size=(IMG_NET, IMG_NET), mode="bilinear", align_corners=False)
         out.append(t.squeeze(0).numpy().astype(np.float32))
-    return np.stack(out)  # [V, 3, H, W]
+    stack = np.stack(out)  # [V, 3, H, W]
+    return (stack, np.asarray(times, np.float64)) if return_times else stack
 
 
 def _window(frames, t, n_frames):
@@ -122,16 +125,18 @@ def collect_demos(scenes, n_frames, views, chunk, seed=0):
     expert action chunks (label[t] = the expert's own next `chunk` actions)."""
     env = SO101PickPlaceTask(seed=seed)
     renderers = {v: mujoco.Renderer(env.model, height=IMG_RENDER, width=IMG_RENDER) for v in views}
-    samples_imgs, samples_state, samples_label, samples_stage = [], [], [], []
-    for scene in scenes:
+    samples_imgs, samples_state, samples_label, samples_mask, samples_stage = [], [], [], [], []
+    sample_episode, sample_frame_indices, sample_view_times, sample_temporal_view_times = [], [], [], []
+    for episode, scene in enumerate(scenes):
         command = int(scene["command"]); color = _color(command)
         positions = {c: np.asarray(v, float) for c, v in scene["positions"].items()}
         env.reset(command=command, positions=positions)
         prev = HOME_QPOS.astype(np.float32)
-        frames, states, actions, stages = [], [], [], []
+        frames, view_times, states, actions, stages = [], [], [], [], []
         dwell = 0
         for _ in range(EP_LEN):
-            frames.append(render_views(env, renderers, views))
+            frame, times = render_views(env, renderers, views, return_times=True)
+            frames.append(frame); view_times.append(times)
             states.append(state_vec(env, prev))
             a = env.reactive_action(gain=0.25, max_dq=0.03).astype(np.float32)
             actions.append(a); stages.append(stage_of(env, color))
@@ -148,19 +153,33 @@ def collect_demos(scenes, n_frames, views, chunk, seed=0):
             chunk_lab = actions[t:t + chunk]
             if len(chunk_lab) < chunk:
                 chunk_lab = np.concatenate([chunk_lab, np.repeat(actions[-1:], chunk - len(chunk_lab), 0)])
+            valid = np.zeros(chunk, np.float32); valid[:min(chunk, T - t)] = 1.0
             samples_label.append(chunk_lab)
+            samples_mask.append(valid)
             samples_stage.append(stages[t])
+            sample_episode.append(episode)
+            sample_frame_indices.append([max(0, t - k) for k in range(n_frames - 1, -1, -1)])
+            sample_view_times.append(view_times[t])
+            sample_temporal_view_times.append(_window(np.asarray(view_times, np.float64), t, n_frames))
     for r in renderers.values():
         r.close()
     return {"imgs": np.asarray(samples_imgs, np.float32), "state": np.asarray(samples_state, np.float32),
-            "label": np.asarray(samples_label, np.float32), "stage": samples_stage}
+            "label": np.asarray(samples_label, np.float32), "mask": np.asarray(samples_mask, np.float32),
+            "stage": samples_stage, "episode": np.asarray(sample_episode, np.int32),
+            "frame_indices": np.asarray(sample_frame_indices, np.int32),
+            "view_times": np.asarray(sample_view_times, np.float64),
+            "temporal_view_times": np.asarray(sample_temporal_view_times, np.float64)}
 
 
 # ---- model ---------------------------------------------------------------
 class SharedEncoder(nn.Module):
     def __init__(self):
         super().__init__()
-        base = resnet18(weights=None)
+        # BatchNorm's running statistics make a 1/8-sample overfit gate report
+        # a different function in train and eval modes. GroupNorm is independent
+        # of batch size and therefore suitable for the deterministic controller
+        # ladder (and remains deployable on a real robot).
+        base = resnet18(weights=None, norm_layer=lambda channels: nn.GroupNorm(32, channels))
         base.fc = nn.Identity()
         self.net = base
         self.out_dim = 512
@@ -191,14 +210,18 @@ def _normalize(a, mu, sd):
     return (a - mu) / sd
 
 
-def _train_overfit(cfg, I, S, Y, seed, device, steps, lr):
+def _masked_mse(pred, target, mask):
+    weights = mask.unsqueeze(-1)
+    return ((pred - target).square() * weights).sum() / (weights.sum() * pred.shape[-1]).clamp_min(1.0)
+
+
+def _train_overfit(cfg, I, S, Y, M, seed, device, steps, lr):
     seed_everything(seed)
     net = DeployableController(cfg["n_frames"], len(cfg["views"]), STATE_DIM, cfg["chunk"]).to(device)
     opt = torch.optim.Adam(net.parameters(), lr=lr)
-    lossf = nn.MSELoss()
     net.train()
     for _ in range(steps):
-        opt.zero_grad(); lossf(net(I, S), Y).backward(); opt.step()
+        opt.zero_grad(); _masked_mse(net(I, S), Y, M).backward(); opt.step()
     net.eval()
     return net
 
@@ -217,28 +240,29 @@ def supervised_gate(data, cfg, seed, device, steps=1200, n=64, lr=3e-4):
     N = len(data["state"])
     idx = np.linspace(0, N - 1, n).astype(int)     # deterministic batch spanning phases
     imgs = torch.from_numpy(data["imgs"][idx]).float()
-    st_np, lab_np = data["state"][idx], data["label"][idx]
+    st_np, lab_np, mask_np = data["state"][idx], data["label"][idx], data["mask"][idx]
     smu, ssd = st_np.mean(0), st_np.std(0) + 1e-6
-    lmu, lsd = lab_np.reshape(-1, 6).mean(0), lab_np.reshape(-1, 6).std(0) + 1e-6
+    valid_labels = lab_np.reshape(-1, 6)[mask_np.reshape(-1).astype(bool)]
+    lmu, lsd = valid_labels.mean(0), valid_labels.std(0) + 1e-6
     I = imgs.to(dev)
     S = torch.from_numpy(_normalize(st_np, smu, ssd)).float().to(dev)
     Y = torch.from_numpy(_normalize(lab_np, lmu, lsd)).float().to(dev)
+    M = torch.from_numpy(mask_np).float().to(dev)
     Sz = torch.zeros_like(S)          # state zeroed  -> image-only
     Iz = torch.zeros_like(I)          # image zeroed  -> state-only
-    lossf = nn.MSELoss()
 
-    net = _train_overfit(cfg, I, S, Y, seed, dev, steps, lr)          # full
-    net_img = _train_overfit(cfg, I, Sz, Y, seed, dev, steps, lr)     # image-only (vision wiring)
-    net_st = _train_overfit(cfg, Iz, S, Y, seed, dev, steps, lr)      # state-only (diagnostic)
+    net = _train_overfit(cfg, I, S, Y, M, seed, dev, steps, lr)          # full
+    net_img = _train_overfit(cfg, I, Sz, Y, M, seed, dev, steps, lr)     # image-only (vision wiring)
+    net_st = _train_overfit(cfg, Iz, S, Y, M, seed, dev, steps, lr)      # state-only (diagnostic)
 
     with torch.inference_mode():
         pred = net(I, S)
-        full_overfit = float(lossf(pred, Y).item())
-        full_norm_mae = float((pred - Y).abs().mean().item())
-        mae_phys = float(np.abs(pred.cpu().numpy() * lsd + lmu - lab_np).mean())
-        image_only_overfit = float(lossf(net_img(I, Sz), Y).item())
-        image_only_norm_mae = float((net_img(I, Sz) - Y).abs().mean().item())
-        state_only_overfit = float(lossf(net_st(Iz, S), Y).item())
+        full_overfit = float(_masked_mse(pred, Y, M).item())
+        full_norm_mae = float((((pred - Y).abs() * M.unsqueeze(-1)).sum() / (M.sum() * 6)).item())
+        mae_phys = float((np.abs(pred.cpu().numpy() * lsd + lmu - lab_np) * mask_np[..., None]).sum() / (mask_np.sum() * 6))
+        image_only_overfit = float(_masked_mse(net_img(I, Sz), Y, M).item())
+        image_only_norm_mae = float((((net_img(I, Sz) - Y).abs() * M.unsqueeze(-1)).sum() / (M.sum() * 6)).item())
+        state_only_overfit = float(_masked_mse(net_st(Iz, S), Y, M).item())
         # Use the image-only model for the controls.  A full model can reasonably
         # use proprioception too; this makes the visual-pathway claim falsifiable.
         img_pred = net_img(I, Sz)
@@ -279,19 +303,22 @@ def train_policy(data, cfg, seed, device, steps, lr=3e-4):
     images = torch.from_numpy(np.asarray(data["imgs"], np.float32))
     states = np.asarray(data["state"], np.float32)
     labels = np.asarray(data["label"], np.float32)
+    masks = np.asarray(data.get("mask", np.ones(labels.shape[:2], np.float32)), np.float32)
     smu, ssd = states.mean(0), states.std(0) + 1e-6
-    ymu, ysd = labels.reshape(-1, 6).mean(0), labels.reshape(-1, 6).std(0) + 1e-6
+    valid_labels = labels.reshape(-1, 6)[masks.reshape(-1).astype(bool)]
+    ymu, ysd = valid_labels.mean(0), valid_labels.std(0) + 1e-6
     st = torch.from_numpy(_normalize(states, smu, ssd)).float()
     y = torch.from_numpy(_normalize(labels, ymu, ysd)).float()
+    mask = torch.from_numpy(masks).float()
     dev = torch.device(device)
     net = DeployableController(cfg["n_frames"], len(cfg["views"]), STATE_DIM, cfg["chunk"]).to(dev)
-    opt, lossf = torch.optim.Adam(net.parameters(), lr=lr), nn.MSELoss()
+    opt = torch.optim.Adam(net.parameters(), lr=lr)
     bs = min(64, len(images))
     net.train()
     for _ in range(steps):
         idx = torch.randint(0, len(images), (bs,))
         opt.zero_grad()
-        lossf(net(images[idx].to(dev), st[idx].to(dev)), y[idx].to(dev)).backward()
+        _masked_mse(net(images[idx].to(dev), st[idx].to(dev)), y[idx].to(dev), mask[idx].to(dev)).backward()
         opt.step()
     net.eval()
     return net, (smu, ssd, ymu, ysd)
@@ -369,21 +396,25 @@ def _summary(rows):
 
 def four_scene_dagger(scenes, cfg, seed, device, rounds, steps, cap, replan, video_dir):
     """One-seed promotion experiment; deliberately no held-out or multi-seed work."""
-    aggregate = collect_demos(scenes, cfg["n_frames"], cfg["views"], cfg["chunk"], seed)
+    demos = collect_demos(scenes, cfg["n_frames"], cfg["views"], cfg["chunk"], seed)
+    aggregate = {key: demos[key] for key in ("imgs", "state", "label", "mask", "stage")}
     curve, final = [], None
     for rnd in range(rounds):
         net, norm = train_policy(aggregate, cfg, seed, device, steps)
-        rows, additions = [], {"imgs": [], "state": [], "label": [], "stage": []}
+        rows, additions = [], {"imgs": [], "state": [], "label": [], "mask": [], "stage": []}
         for i, scene in enumerate(scenes):
             row, visited = rollout(net, norm, cfg, scene, cap, device, collect=rnd < rounds - 1, replan=replan)
             rows.append(row)
             for key in additions:
-                additions[key].extend(v[key] for v in visited)
+                if key == "mask":
+                    additions[key].extend(np.ones(cfg["chunk"], np.float32) for _ in visited)
+                else:
+                    additions[key].extend(v[key] for v in visited)
         curve.append({"round": rnd, "train_size": len(aggregate["state"]), "new_learner_states": len(additions["state"]),
                       **_summary(rows), "per_scene": rows})
         final = (net, norm)
         if rnd < rounds - 1:
-            for key in aggregate:
+            for key in additions:
                 aggregate[key] = np.concatenate([aggregate[key], np.asarray(additions[key])])
     # Videos only for the final model: each success and the first representative failure.
     net, norm = final

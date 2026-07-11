@@ -1,0 +1,25 @@
+{
+  "status": "interrupted_without_result",
+  "preserved_at": "2026-07-11T15:35:00+01:00",
+  "commands": [
+    "PYTORCH_ENABLE_MPS_FALLBACK=1 MUJOCO_GL=glfw .venv/bin/python -m scripts.deployable_controller --configs temporal --seed 0 --steps 1200 --device mps --output artifacts/truth_harness/deployable_supervised_gate_temporal_seed0.json",
+    "PYTHONUNBUFFERED=1 MUJOCO_GL=glfw .venv/bin/python -m scripts.deployable_controller --configs temporal --seed 0 --steps 1 --device cpu --output /tmp/deployable_gate_smoke.json"
+  ],
+  "process_observation": {
+    "mps_pid": 19120,
+    "mps_started_local": "2026-07-11T15:23:00+01:00 (minute-resolution ps)",
+    "cpu_pid": 19161,
+    "cpu_started_local": "2026-07-11T15:24:00+01:00 (minute-resolution ps)",
+    "terminated_by": "diagnostic operator after the tool wrapper detached from both child processes",
+    "runtime_before_termination": "approximately 1-2 minutes; exact duration unavailable"
+  },
+  "evidence": {
+    "expected_mps_output": "artifacts/truth_harness/deployable_supervised_gate_temporal_seed0.json",
+    "expected_cpu_output": "/tmp/deployable_gate_smoke.json",
+    "outputs_exist": false,
+    "new_stdout_or_stderr_log_exists": false,
+    "recorded_exit_status": null,
+    "last_completed_step": null
+  },
+  "diagnosis": "not a model threshold failure, NaN, artifact-write failure, timeout, or confirmed crash: the prior implementation printed and wrote only after collection plus all three full overfit fits, so it emitted no progress evidence before interruption. The next diagnostic writes an artifact and log before training and after periodic optimizer steps."
+}

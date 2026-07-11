@@ -33,6 +33,30 @@ The JSON records normalized full-model and image-only overfit error plus the
 image-only blank-image, swapped-image, and (for temporal variants) shuffled-frame
 prediction changes. A temporal run must pass before any DAgger command runs.
 
+## Deterministic supervised diagnosis (2026-07-11)
+
+The original gate attempt produced no JSON because it only wrote after three
+complete ResNet fits; its foreground launcher detached while those fits were
+still running. It was therefore not valid evidence of an accuracy failure. The
+replacement diagnostic writes a live JSON and log before collection, hashes its
+inputs before/after training, and runs fixed full-batch 1/8/64-sample rungs:
+
+```bash
+PYTHONUNBUFFERED=1 MUJOCO_GL=glfw .venv/bin/python -m scripts.diagnose_supervised_gate \
+  --architecture temporal --seed 0 --device mps --lr 1e-5 --min-steps 400 \
+  --output artifacts/truth_harness/deployable_overfit_ladder_2026-07-11T1640.json
+```
+
+The completed artifact passes all three gates: normalized MSE is `3.33e-14`
+(one), `8.39e-14` (eight), and `1.25e-08` (64); the 64-sample save/reload loss
+matches exactly. It found no exact/near-duplicate contradictory labels, no
+cross-episode temporal stack, no camera timestamp mismatch, and no invalid
+padding mask. The actual implementation bugs were BatchNorm's train/eval
+running-stat mismatch for tiny batches and non-weights-only-loadable NumPy
+checkpoint metadata. The encoder now uses GroupNorm and stores index metadata as
+plain lists. A fixed Adam rate of `1e-5` is stable; the previous `1e-4`/`3e-4`
+runs produced optimizer overshoot.
+
 The one-seed four-scene experiment is explicitly separate and is blocked by that
 saved temporal result. It emits approach, grasp, transport, release, and final
 success independently, and writes all successful plus one representative failing
