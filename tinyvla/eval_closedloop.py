@@ -78,6 +78,7 @@ def evaluate_closed_loop(
         cameras = [camera]
     renderers = {cam: mujoco.Renderer(env.model, height=img, width=img) for cam in cameras}
     successes, min_dists, final_dists = [], [], []
+    stage_rows = []
     per_command_raw: dict[int, dict[str, list[float]]] = {
         int(ci): {"successes": [], "min_dists": [], "final_dists": []} for ci in commands
     }
@@ -93,14 +94,22 @@ def evaluate_closed_loop(
                     torch.manual_seed(rollout_seed)
                     dmin = float("inf")
                     hold = 0
+                    action_min, action_max, saturated = float("inf"), float("-inf"), 0
+                    stages = {"approach": False, "grasp": False, "transport": False, "release": False}
                     for _ in range(cap):
                         obs = preprocessor(build_obs(env, renderers, COMMANDS[ci]["instruction"], device, camera))
                         with torch.inference_mode():
                             action = policy.select_action(obs)
                         action = postprocessor(action).squeeze(0).cpu().numpy()
+                        action_min = min(action_min, float(np.min(action))); action_max = max(action_max, float(np.max(action)))
+                        saturated += int(np.sum(np.isclose(np.abs(action), 1.0, atol=1e-3)))
                         if delta_actions:
                             action = action + env.data.qpos[:6].astype(action.dtype)
                         env.step(action)
+                        dist = float(np.linalg.norm(env.ee_pos() - env.cube_pos(env.active_subtask()[0])))
+                        stages["approach"] |= dist <= 0.05
+                        stages["grasp"] |= env.grasped is not None
+                        stages["transport"] |= env.grasped is not None and float(env.ee_pos()[2]) > 0.15
                         # Distance to the ACTIVE sub-task's cube, derived from scene
                         # state — for two-step commands a learned policy never advances
                         # step_idx, so env.cube_pos() (target_color) would keep measuring
@@ -108,6 +117,7 @@ def evaluate_closed_loop(
                         active_color = env.active_subtask()[0]
                         dmin = min(dmin, float(np.linalg.norm(env.ee_pos() - env.cube_pos(active_color))))
                         hold = hold + 1 if env.success() else 0
+                        stages["release"] |= bool(env.success())
                         if stop_on_success and hold >= dwell:
                             break
                     succeeded = int(env.success())
@@ -119,6 +129,9 @@ def evaluate_closed_loop(
                     row["successes"].append(succeeded)
                     row["min_dists"].append(dmin)
                     row["final_dists"].append(final_dist)
+                    stage_rows.append({"command": int(ci), "episode": ep, **stages,
+                                       "action_min": action_min, "action_max": action_max,
+                                       "saturated_fraction": saturated / max(1, cap * 6)})
         finally:
             for renderer in renderers.values():
                 renderer.close()
@@ -144,6 +157,12 @@ def evaluate_closed_loop(
         "mean_min_dist": float(np.mean(min_dists)) if n else None,
         "mean_final_dist": float(np.mean(final_dists)) if n else None,
         "per_command": per_command,
+        "stage_rows": stage_rows,
+        "stage_completion": {stage: float(np.mean([r[stage] for r in stage_rows]))
+                             for stage in ("approach", "grasp", "transport", "release")} if stage_rows else {},
+        "action_range": {"min": float(min(r["action_min"] for r in stage_rows)),
+                         "max": float(max(r["action_max"] for r in stage_rows)),
+                         "saturated_fraction": float(np.mean([r["saturated_fraction"] for r in stage_rows]))} if stage_rows else {},
     }
     groups = {"single_step_0_3": (0, 1, 2, 3), "stacking_4_5": (4, 5), "two_step_6_7": (6, 7)}
     result["groups"] = {}
