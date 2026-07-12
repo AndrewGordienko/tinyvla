@@ -156,9 +156,9 @@ def new_event_tracker():
 
 
 def update_event_tracker(env, events):
-    events["ever_grasped"] |= env.grasped is not None
-    events["ever_lifted"] |= events["ever_grasped"] and env.grasped is not None and env.ee_pos()[2] > SAFE_Z - 0.02
-    events["released_after_grasp"] |= events["ever_grasped"] and env.grasped is None
+    events["ever_grasped"] = bool(events["ever_grasped"] or env.grasped is not None)
+    events["ever_lifted"] = bool(events["ever_lifted"] or (events["ever_grasped"] and env.grasped is not None and float(env.ee_pos()[2]) > SAFE_Z - 0.02))
+    events["released_after_grasp"] = bool(events["released_after_grasp"] or (events["ever_grasped"] and env.grasped is None))
     return events
 
 
