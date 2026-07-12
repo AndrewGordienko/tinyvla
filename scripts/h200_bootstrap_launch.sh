@@ -14,16 +14,17 @@ DATA_ROOT="data/datasets/command0_multiview_32"
 BASE_ROOT="data/models/smolvla_base"
 DATA_SHA="686808ab96fed5d3005b8cbf8d0351d7cb66f9e77d61f8827913f367f270fbd7"
 BASE_SHA="b818911fd8cbf2bc7fd7a3752d0c25f3316b3399c2ecc86d2788ec9d3b49dafd"
+GPU_FAMILY="${GPU_FAMILY:-H200}"
 
 SSH=(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -p "$PORT")
-RSYNC=(rsync -az --info=progress2 -e "ssh -o StrictHostKeyChecking=no -p $PORT")
+RSYNC=(rsync -az --progress --exclude='.venv' --exclude='.git' --exclude='data/checkpoints' --exclude='artifacts' --exclude='.pytest_cache' -e "ssh -o StrictHostKeyChecking=no -p $PORT")
 
 "${SSH[@]}" "$REMOTE" "mkdir -p '$REMOTE_ROOT'"
 "${SSH[@]}" "$REMOTE" "if [ ! -d '$REMOTE_ROOT/.git' ]; then git clone https://github.com/AndrewGordienko/tinyvla.git '$REMOTE_ROOT'; fi"
-"${RSYNC[@]}" --exclude='.git' ./ "$REMOTE:$REMOTE_ROOT/"
-"${SSH[@]}" "$REMOTE" bash -s -- "$REMOTE_ROOT" "$COMMIT" "$DATA_SHA" "$BASE_SHA" <<'REMOTE_BOOTSTRAP'
+"${RSYNC[@]}" ./ "$REMOTE:$REMOTE_ROOT/"
+"${SSH[@]}" "$REMOTE" bash -s -- "$REMOTE_ROOT" "$COMMIT" "$DATA_SHA" "$BASE_SHA" "$GPU_FAMILY" <<'REMOTE_BOOTSTRAP'
 set -euo pipefail
-ROOT="$1"; COMMIT="$2"; EXPECTED_DATA="$3"; EXPECTED_BASE="$4"
+ROOT="$1"; COMMIT="$2"; EXPECTED_DATA="$3"; EXPECTED_BASE="$4"; GPU_FAMILY="$5"
 DATA_ROOT="data/datasets/command0_multiview_32"; BASE_ROOT="data/models/smolvla_base"
 cd "$ROOT"
 test "$(git status --porcelain)" = ""
@@ -32,7 +33,7 @@ git checkout --detach "$COMMIT"
 test "$(git rev-parse HEAD)" = "$COMMIT"
 command -v nvidia-smi >/dev/null
 GPU_LINE="$(nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader | head -1)"
-echo "$GPU_LINE" | grep -qi 'H200' || { echo "wrong GPU: $GPU_LINE" >&2; exit 2; }
+echo "$GPU_LINE" | grep -qi "$GPU_FAMILY" || { echo "wrong GPU (expected $GPU_FAMILY): $GPU_LINE" >&2; exit 2; }
 python3 --version
 if [ ! -x .venv/bin/python ]; then python3 -m venv .venv; fi
 .venv/bin/pip install -e '.[lerobot,test]'
