@@ -16,7 +16,6 @@ import numpy as np
 import torch
 
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
-from tinyvla.eval_closedloop import build_obs
 from tinyvla.runtime import load_runtime, sha256_tree
 from tinyvla.task import COMMANDS, SO101PickPlaceTask, SAFE_Z
 
@@ -100,6 +99,41 @@ def render(env, renderers):
     return images
 
 
+def build_obs_from_frames(env, frames, instruction, device):
+    """Build the exact policy input from the one render per camera."""
+    if len(frames) != len(CAMERAS):
+        raise ValueError("front and wrist frames are required")
+    images = {}
+    for camera, frame in zip(CAMERAS, frames):
+        images[f"observation.images.{camera}"] = torch.from_numpy(frame).permute(2, 0, 1).float().div(255.0).unsqueeze(0).to(device)
+    images["observation.state"] = torch.from_numpy(env.data.qpos[:6].copy().astype(np.float32)).unsqueeze(0).to(device)
+    images["task"] = [instruction]
+    return images
+
+
+def cached_observation_hash(env, frames):
+    return _hash(*frames, env.data.qpos[:6].copy())
+
+
+def tensor_hash(value):
+    if isinstance(value, torch.Tensor):
+        return _hash(value.detach().cpu().numpy())
+    if isinstance(value, dict):
+        return _hash(*[key for key in sorted(value)], *[tensor_hash(value[key]) for key in sorted(value)])
+    if isinstance(value, (list, tuple)):
+        return _hash(*[tensor_hash(item) for item in value])
+    return _hash(value)
+
+
+def render_diagnostic(env, renderers):
+    """Record EGL repeatability without making it an acceptance gate."""
+    first = render(env, renderers); second = render(env, renderers)
+    diffs = np.concatenate([np.abs(a.astype(np.int16) - b.astype(np.int16)).ravel() for a, b in zip(first, second)])
+    changed = np.concatenate([(a != b).any(axis=2).ravel() for a, b in zip(first, second)])
+    return {"max_difference": int(diffs.max(initial=0)), "mae": float(diffs.mean()),
+            "p99_difference": float(np.percentile(diffs, 99)), "changed_pixel_fraction": float(changed.mean())}
+
+
 def oracle_chunk(oracle, state):
     restore(oracle, state)
     actions = []
@@ -153,16 +187,21 @@ def collect(args):
     learner = SO101PickPlaceTask(seed=0); oracle = SO101PickPlaceTask(seed=0)
     renderers = {c: mujoco.Renderer(learner.model, height=IMG, width=IMG) for c in CAMERAS}
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
+    learner.rng = np.random.default_rng(2000); learner.reset(command=0)
+    pixel_diagnostic = render_diagnostic(learner, renderers)
     phase_tests = verify_phase_clones(learner, oracle)
     (out / "clone_smoke.json").write_text(json.dumps({"phase_tests": phase_tests,
                                                         "learner_untouched": True,
-                                                        "oracle_replay_deterministic": True}, indent=2) + "\n")
+                                                        "oracle_replay_deterministic": True,
+                                                        "egl_repeat_render_diagnostic": pixel_diagnostic}, indent=2) + "\n")
     records = []; seeds = [2000] if args.smoke else list(range(2000, 2064))
     for seed in seeds:
         learner.rng = np.random.default_rng(seed); learner.reset(command=0); policy.reset()
         for t in range(0, args.cap, args.interval):
             images = render(learner, renderers); before = snapshot(learner); before_hash = state_hash(before)
-            obs = runtime.preprocessor(build_obs(learner, renderers, COMMANDS[0]["instruction"], args.device))
+            raw_observation_hash = cached_observation_hash(learner, images)
+            obs = runtime.preprocessor(build_obs_from_frames(learner, images, COMMANDS[0]["instruction"], args.device))
+            policy_observation_hash = tensor_hash(obs)
             chunk_a = oracle_chunk(oracle, before)
             chunk_b = oracle_chunk(oracle, before)
             if not np.array_equal(chunk_a, chunk_b):
@@ -170,11 +209,10 @@ def collect(args):
             after_hash = state_hash(snapshot(learner))
             if before_hash != after_hash:
                 raise RuntimeError("live learner changed during oracle query")
-            if any(not np.array_equal(a, b) for a, b in zip(images, render(learner, renderers))):
-                raise RuntimeError("live learner rendered observation changed during oracle query")
             rec = {"source": "dagger", "scene_seed": seed, "timestep": t, "stage": phase_name(learner),
                    "teacher_sha": sha256_tree(args.teacher, patterns=("*.json", "*.safetensors")),
-                   "observation_hash": _hash(*images, learner.data.qpos[:6].copy()),
+                   "observation_hash": raw_observation_hash, "raw_observation_hash": raw_observation_hash,
+                   "policy_observation_hash": policy_observation_hash,
                    "action_chunk_hash": _hash(chunk_a), "front": images[0], "wrist": images[1],
                    "state": learner.data.qpos[:6].copy().astype(np.float32), "action_chunk": chunk_a,
                    "instruction": COMMANDS[0]["instruction"], "learner_state_before": before_hash,
@@ -194,6 +232,7 @@ def collect(args):
                 "privileged_policy_inputs": False, "sealed_heldout_excluded": True,
                 "twin_environment": True, "learner_untouched": True, "oracle_state_api": "mjSTATE_FULLPHYSICS",
                 "phase_clone_tests": phase_tests}
+    manifest["egl_repeat_render_diagnostic"] = pixel_diagnostic
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(json.dumps({"records": len(records), "out": str(out), "manifest": manifest}, indent=2))
 
