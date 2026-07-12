@@ -151,6 +151,27 @@ def phase_name(env):
     return str(env.phase)
 
 
+def new_event_tracker():
+    return {"ever_grasped": False, "ever_lifted": False, "released_after_grasp": False}
+
+
+def update_event_tracker(env, events):
+    events["ever_grasped"] |= env.grasped is not None
+    events["ever_lifted"] |= events["ever_grasped"] and env.grasped is not None and env.ee_pos()[2] > SAFE_Z - 0.02
+    events["released_after_grasp"] |= events["ever_grasped"] and env.grasped is None
+    return events
+
+
+def physical_stage(events, env):
+    if events["released_after_grasp"]:
+        return "release"
+    if events["ever_lifted"] and env.grasped is not None:
+        return "transport"
+    if events["ever_grasped"] and env.grasped is not None:
+        return "grasp"
+    return "approach"
+
+
 def verify_phase_clones(learner, oracle):
     """Exercise clone/replay at semantic boundaries before records are accepted."""
     learner.rng = np.random.default_rng(2000); learner.reset(command=0)
@@ -197,41 +218,50 @@ def collect(args):
     records = []; seeds = [2000] if args.smoke else list(range(2000, 2064))
     for seed in seeds:
         learner.rng = np.random.default_rng(seed); learner.reset(command=0); policy.reset()
-        for t in range(0, args.cap, args.interval):
+        events = new_event_tracker()
+        for t in range(args.cap):
             images = render(learner, renderers); before = snapshot(learner); before_hash = state_hash(before)
             raw_observation_hash = cached_observation_hash(learner, images)
             obs = runtime.preprocessor(build_obs_from_frames(learner, images, COMMANDS[0]["instruction"], args.device))
             policy_observation_hash = tensor_hash(obs)
-            chunk_a = oracle_chunk(oracle, before)
-            chunk_b = oracle_chunk(oracle, before)
-            if not np.array_equal(chunk_a, chunk_b):
-                raise RuntimeError("independently restored oracle action chunks differ")
-            after_hash = state_hash(snapshot(learner))
-            if before_hash != after_hash:
-                raise RuntimeError("live learner changed during oracle query")
-            rec = {"source": "dagger", "scene_seed": seed, "timestep": t, "stage": phase_name(learner),
-                   "teacher_sha": sha256_tree(args.teacher, patterns=("*.json", "*.safetensors")),
-                   "observation_hash": raw_observation_hash, "raw_observation_hash": raw_observation_hash,
-                   "policy_observation_hash": policy_observation_hash,
-                   "action_chunk_hash": _hash(chunk_a), "front": images[0], "wrist": images[1],
-                   "state": learner.data.qpos[:6].copy().astype(np.float32), "action_chunk": chunk_a,
-                   "instruction": COMMANDS[0]["instruction"], "learner_state_before": before_hash,
-                   "learner_state_after": after_hash, "oracle_replay_identical": True,
-                   "snapshot_restore_verified": True}
-            records.append(rec)
-            if args.smoke and len(records) >= args.smoke_states: break
+            if t % args.interval == 0:
+                chunk_a = oracle_chunk(oracle, before)
+                chunk_b = oracle_chunk(oracle, before)
+                if not np.array_equal(chunk_a, chunk_b):
+                    raise RuntimeError("independently restored oracle action chunks differ")
+                after_hash = state_hash(snapshot(learner))
+                if before_hash != after_hash:
+                    raise RuntimeError("live learner changed during oracle query")
+                rec = {"source": "dagger", "scene_seed": seed, "timestep": t, "stage": physical_stage(events, learner),
+                       "teacher_sha": sha256_tree(args.teacher, patterns=("*.json", "*.safetensors")),
+                       "observation_hash": raw_observation_hash, "raw_observation_hash": raw_observation_hash,
+                       "policy_observation_hash": policy_observation_hash,
+                       "action_chunk_hash": _hash(chunk_a), "front": images[0], "wrist": images[1],
+                       "state": learner.data.qpos[:6].copy().astype(np.float32), "action_chunk": chunk_a,
+                       "instruction": COMMANDS[0]["instruction"], "learner_state_before": before_hash,
+                       "learner_state_after": after_hash, "oracle_replay_identical": True,
+                       "snapshot_restore_verified": True, "event_tracker": copy.deepcopy(events)}
+                records.append(rec)
+                if args.smoke and len(records) >= args.smoke_states and args.smoke_short:
+                    break
             with torch.inference_mode():
                 action = runtime.postprocessor(policy.select_action(obs)).squeeze(0).cpu().numpy()
             learner.step(action)
+            update_event_tracker(learner, events)
         if args.smoke and len(records) >= args.smoke_states: break
     if args.smoke and len(records) < args.smoke_states:
         raise RuntimeError(f"smoke collected only {len(records)} states")
     np.savez_compressed(out / "recovery_records.npz", records=np.asarray(records, dtype=object))
+    stage_counts = {stage: sum(record["stage"] == stage for record in records) for stage in ("approach", "grasp", "transport", "release")}
     manifest = {"source": "dagger", "records": len(records), "cameras": CAMERAS, "chunk_length": CHUNK,
                 "dataset_hash": sha256_tree(args.dataset), "teacher_hash": sha256_tree(args.teacher, patterns=("*.json", "*.safetensors")),
                 "privileged_policy_inputs": False, "sealed_heldout_excluded": True,
                 "twin_environment": True, "learner_untouched": True, "oracle_state_api": "mjSTATE_FULLPHYSICS",
-                "phase_clone_tests": phase_tests}
+                "phase_clone_tests": phase_tests, "learner_actions_executed": len(seeds) * args.cap,
+                "stage_counts": stage_counts,
+                "first_state_hash": records[0]["learner_state_before"] if records else None,
+                "last_state_hash": records[-1]["learner_state_before"] if records else None,
+                "final_event_tracker": events}
     manifest["egl_repeat_render_diagnostic"] = pixel_diagnostic
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(json.dumps({"records": len(records), "out": str(out), "manifest": manifest}, indent=2))
@@ -243,4 +273,5 @@ if __name__ == "__main__":
     parser.add_argument("--out", required=True); parser.add_argument("--device", default="cuda")
     parser.add_argument("--cap", type=int, default=120); parser.add_argument("--interval", type=int, default=5)
     parser.add_argument("--smoke", action="store_true"); parser.add_argument("--smoke-states", type=int, default=4)
+    parser.add_argument("--smoke-short", action="store_true")
     collect(parser.parse_args())
