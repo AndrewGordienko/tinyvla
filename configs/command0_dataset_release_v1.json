@@ -1,0 +1,12 @@
+{
+  "release_tag": "smolvla-command0-dataset-v1",
+  "archive": "smolvla-command0-dataset-v1.tar.zst",
+  "archive_sha256": "6c8dd16eac231bb95da14837ff080a2f824c04e0a40fef69bc1cfbad8eba90dd",
+  "extracted_dataset_tree_sha256": "686808ab96fed5d3005b8cbf8d0351d7cb66f9e77d61f8827913f367f270fbd7",
+  "dataset_semantic_hash": "da0286e7bc920f4b24d24b1289775ea94b3e9a6227c3a60b36c8a7b03c54a8a6",
+  "episodes": 32,
+  "frames": 2180,
+  "source_git_sha": "a271123fcd7c64c351ee0c14c29a627722ea8386",
+  "generation": {"seed": 2000, "commands": [0], "cameras": ["front", "wrist"], "image_size": [256, 256], "fps": 25, "videos": false, "action_semantics": "absolute"},
+  "contents": "synthetic MuJoCo observations/actions only; credential and private-path scan clean"
+}
