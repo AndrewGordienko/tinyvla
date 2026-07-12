@@ -1,0 +1,14 @@
+{
+  "repository": "lerobot/smolvla_base",
+  "revision": "c83c3163b8ca9b7e67c509fffd9121e66cb96205",
+  "local_tree_sha256": "b818911fd8cbf2bc7fd7a3752d0c25f3316b3399c2ecc86d2788ec9d3b49dafd",
+  "files": {
+    ".gitattributes": "32949ddb126c25a78e757b890078c46d0c8f8e899e56510a1efef817233149f9",
+    "config.json": "650584b56c104720f7a3c91d1ec6bec9e8de8ac11e60c92ba2fa82d93eda147d",
+    "model.safetensors": "7cd549ac2351fb069c0ddb3c34ad2d09cfc92b56a15dccdfc2e41467aaca01eb",
+    "policy_postprocessor.json": "2b78bb742065288df2ec63b0ee35f97a1f6950171cf2272f7e34b1fe3873b17b",
+    "policy_postprocessor_step_0_unnormalizer_processor.safetensors": "490ab239d96e263687c0b2e386a0afbc235a2eceb9857c36ed32f2f162a3e7c8",
+    "policy_preprocessor.json": "7683d648280a72f0d51e869fb8dd1596beed90b7f84849330cf1bc26634a4bd6",
+    "policy_preprocessor_step_5_normalizer_processor.safetensors": "490ab239d96e263687c0b2e386a0afbc235a2eceb9857c36ed32f2f162a3e7c8"
+  }
+}
