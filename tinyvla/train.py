@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import tempfile
 import random
 import time
 from contextlib import nullcontext
@@ -33,7 +35,7 @@ from .paths import CHECKPOINTS_ROOT, DATASETS_ROOT, MODELS_ROOT
 from .eval_closedloop import evaluate_closed_loop, format_metrics
 from .fast_dataset import FastChunkDataset
 from .determinism import make_generator, seed_everything, seed_worker
-from .runtime import load_runtime, save_runtime
+from .runtime import load_runtime, save_runtime, sha256_tree
 from .trainability import TRAINABLE_MODES, group_for_param, set_trainable
 
 BACKBONE_GROUPS = ("vision_encoder", "vision_connector", "vlm_text")
@@ -151,11 +153,14 @@ def main():
         args.repo_id, root=args.root, episodes=episode_indices, delta_timestamps=delta_timestamps
     )
     trainable_params = set_trainable(policy, args.trainable)
+    dataset_hash = sha256_tree(args.root)
+    base_hash = sha256_tree(runtime.model_path, patterns=("*.json", "*.safetensors", "*.md", "*.ipynb", "*.gif", "*.gitattributes"))
 
+    loader_generator = make_generator(args.seed)
     dl = DataLoader(ds, batch_size=args.batch_size, shuffle=True,
                     num_workers=args.num_workers, pin_memory=(device.type == "cuda"),
                     persistent_workers=(args.num_workers > 0), drop_last=True,
-                    worker_init_fn=seed_worker, generator=make_generator(args.seed))
+                    worker_init_fn=seed_worker, generator=loader_generator)
     fixed_batch = next(iter(dl)) if args.fixed_batch else None
     trainable_parameters = [p for p in policy.parameters() if p.requires_grad]
     if not trainable_parameters:
@@ -215,6 +220,8 @@ def main():
         random.setstate(state["python_rng"])
         np.random.set_state(state["numpy_rng"])
         torch.set_rng_state(state["torch_rng"])
+        if state.get("sampler_generator_state") is not None:
+            loader_generator.set_state(state["sampler_generator_state"])
         if torch.cuda.is_available() and state.get("cuda_rng") is not None:
             torch.cuda.set_rng_state_all(state["cuda_rng"])
         print(f"resumed global_step={start_step} from {resume_path}")
@@ -233,7 +240,7 @@ def main():
     t0 = time.time()
     running = torch.zeros((), device=device)   # accumulate on-device; .item() every step = a GPU sync
     best_cl = -1.0
-    def save_progress(step: int) -> None:
+    def save_progress(step: int) -> Path:
         metadata = {
           "repo_id": args.repo_id, "dataset_root": str(Path(args.root).resolve()),
             "step": step, "steps_this_run": run_until, "planned_steps": planned_steps,
@@ -241,18 +248,33 @@ def main():
             "init_from": args.init_from,
             "resume": args.resume, "episodes": episode_indices,
         }
-        save_runtime(runtime, args.output, seed=args.seed, extra_metadata=metadata)
         training_state = {
             "optimizer": opt.state_dict(), "scheduler": sched.state_dict() if sched is not None else None,
             "global_step": step, "python_rng": random.getstate(), "numpy_rng": np.random.get_state(),
             "torch_rng": torch.get_rng_state(),
             "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+            "planned_steps": planned_steps, "seed": args.seed, "batch_size": args.batch_size,
+            "lr": args.lr, "dataset_hash": dataset_hash, "base_checkpoint_hash": base_hash,
+            "sampler_generator_state": loader_generator.get_state(),
         }
-        torch.save(training_state, Path(args.output) / "training_state.pt")
-        if args.versioned_checkpoints:
-            versioned = Path(args.output) / f"checkpoint_step_{step}"
-            save_runtime(runtime, versioned, seed=args.seed, extra_metadata=metadata)
-            torch.save(training_state, versioned / "training_state.pt")
+        output = Path(args.output); output.mkdir(parents=True, exist_ok=True)
+        versioned = output / f"checkpoint_step_{step}"
+        tmp = Path(tempfile.mkdtemp(prefix=f".checkpoint_step_{step}.", dir=output))
+        try:
+            save_runtime(runtime, tmp, seed=args.seed, extra_metadata=metadata)
+            torch.save(training_state, tmp / "training_state.pt")
+            manifest = {**metadata, "global_step": step, "dataset_hash": dataset_hash,
+                        "base_checkpoint_hash": base_hash, "files": sorted(p.name for p in tmp.iterdir())}
+            (tmp / "checkpoint_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+            torch.load(tmp / "training_state.pt", map_location="cpu", weights_only=False)
+            if versioned.exists(): shutil.rmtree(versioned)
+            tmp.rename(versioned)
+            save_runtime(runtime, output, seed=args.seed, extra_metadata=metadata)
+            shutil.copy2(versioned / "training_state.pt", output / "training_state.pt")
+            return versioned
+        except Exception:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
 
     batches = iter(cycle(dl)) if fixed_batch is None else None
     fixed_noise = fixed_time = None
@@ -281,7 +303,7 @@ def main():
                   f"{step/dt:.2f} it/s")
             running.zero_()
         if step % args.save_every == 0 or step == args.steps:
-            save_progress(step)
+            checkpoint_dir = save_progress(step)
             print(f"  saved checkpoint to {args.output} (step {step})")
 
         if args.closed_loop_every and (step % args.closed_loop_every == 0 or step == args.steps):
@@ -295,11 +317,11 @@ def main():
             if args.save_best_closed_loop and cl["success_rate"] > best_cl:
                 best_cl = cl["success_rate"]
                 best_path = Path(args.output) / "best_closed_loop"
-                save_runtime(runtime, best_path, seed=args.seed, extra_metadata={
-                    "repo_id": args.repo_id, "dataset_root": str(Path(args.root).resolve()),
-                    "step": step, "steps_this_run": args.steps, "init_from": args.init_from,
-                    "selection": "best_closed_loop", "episodes": episode_indices,
-                })
+                if best_path.exists(): shutil.rmtree(best_path)
+                shutil.copytree(checkpoint_dir, best_path)
+                manifest = json.loads((best_path / "checkpoint_manifest.json").read_text())
+                manifest.update({"selection": "best_closed_loop", "closed_loop": cl})
+                (best_path / "checkpoint_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
                 print(f"    new best closed-loop success {cl['success_rate']:.0%} -> saved {best_path}")
 
     print(f"done in {(time.time()-t0)/60:.1f} min -> {args.output}")
