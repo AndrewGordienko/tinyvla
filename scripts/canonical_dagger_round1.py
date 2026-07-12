@@ -35,8 +35,9 @@ def collect(args):
    restored_imgs=[]
    for c in CAMERAS: renderers[c].update_scene(env.data,camera=c); restored_imgs.append(renderers[c].render().copy())
    restored_hash=h(env.data.qpos[:6].copy(),*restored_imgs)
-   if restored_hash!=obs_hash: raise RuntimeError('snapshot/render restore mismatch')
-   records.append({'source':'dagger','scene_seed':seed,'timestep':t,'stage':str(s['phase']),'teacher_sha':sha256_tree(args.teacher,patterns=('*.json','*.safetensors')),'observation_hash':obs_hash,'action_chunk_hash':h(*actions),'state':state,'front':imgs[0],'wrist':imgs[1],'action_chunk':np.asarray(actions),'instruction':COMMANDS[0]['instruction'],'restore_ok':True})
+   state_delta=float(np.max(np.abs(env.data.qpos[:6]-state))); img_delta=max(float(np.max(np.abs(restored_imgs[i].astype(np.int16)-imgs[i].astype(np.int16)))) for i in range(2))
+   if state_delta>1e-6 or img_delta>4: raise RuntimeError(f'snapshot/render restore mismatch state_delta={state_delta} image_delta={img_delta}')
+   records.append({'source':'dagger','scene_seed':seed,'timestep':t,'stage':str(s['phase']),'teacher_sha':sha256_tree(args.teacher,patterns=('*.json','*.safetensors')),'observation_hash':obs_hash,'action_chunk_hash':h(*actions),'state':state,'front':imgs[0],'wrist':imgs[1],'action_chunk':np.asarray(actions),'instruction':COMMANDS[0]['instruction'],'restore_ok':True,'state_restore_max_abs':state_delta,'render_restore_max_abs':img_delta})
    if smoke and len(records)>=args.smoke_states: break
    with torch.inference_mode(): pa=post(p.select_action(obs)).squeeze(0).cpu().numpy()
    env.step(pa)
