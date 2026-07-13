@@ -1,7 +1,10 @@
 import numpy as np
 
-from scripts.canonical_dagger_round1 import (cached_observation_hash, new_event_tracker,
-    physical_stage, snapshot, state_hash, update_event_tracker, verify_phase_clones)
+import json
+
+from scripts.canonical_dagger_round1 import (aggregate, atomic_json, atomic_npz,
+    cached_observation_hash, file_sha256, new_event_tracker, physical_stage,
+    snapshot, state_hash, update_event_tracker, verify_phase_clones, verify_shard)
 from tinyvla.task import SO101PickPlaceTask
 
 
@@ -59,3 +62,23 @@ def test_physical_stage_tracker_never_relabels_release_as_approach():
     update_event_tracker(env, events); seen.add(physical_stage(events, env))
     assert {"approach", "grasp", "transport", "release"}.issubset(seen)
     assert physical_stage({"ever_grasped": True, "ever_lifted": True, "released_after_grasp": True}, env) == "release"
+
+
+def _write_test_shard(root, seed):
+    records = [{"scene_seed": seed, "timestep": t, "stage": "approach",
+                "learner_state_before": str(t), "learner_state_after": str(t),
+                "oracle_replay_identical": True} for t in range(0, 120, 5)]
+    npz = root / "shards" / f"seed_{seed}.npz"; meta = root / "shards" / f"seed_{seed}.json"
+    npz.parent.mkdir(parents=True, exist_ok=True); atomic_npz(npz, records=np.asarray(records, dtype=object))
+    atomic_json(meta, {"scene_seed": seed, "records": 24, "shard_sha256": file_sha256(npz)})
+    return npz, meta
+
+
+def test_atomic_scene_shards_verify_and_aggregate_reproducibly(tmp_path):
+    for seed in (2000, 2001): _write_test_shard(tmp_path, seed)
+    verify_shard(tmp_path / "shards/seed_2000.npz", tmp_path / "shards/seed_2000.json", 2000)
+    aggregate(tmp_path, (2000, 2001))
+    first = file_sha256(tmp_path / "recovery_records.npz")
+    aggregate(tmp_path, (2000, 2001))
+    assert file_sha256(tmp_path / "recovery_records.npz") == first
+    assert json.loads((tmp_path / "aggregate_manifest.json").read_text())["records"] == 48

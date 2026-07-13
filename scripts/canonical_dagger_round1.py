@@ -9,6 +9,9 @@ import argparse
 import copy
 import hashlib
 import json
+import os
+import subprocess
+import time
 from pathlib import Path
 
 import mujoco
@@ -201,13 +204,71 @@ def verify_phase_clones(learner, oracle):
     return {name: True for name in required}
 
 
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def atomic_json(path, value):
+    path = Path(path); tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("w") as handle:
+        json.dump(value, handle, indent=2); handle.write("\n"); handle.flush(); os.fsync(handle.fileno())
+    os.replace(tmp, path)
+
+
+def atomic_npz(path, **arrays):
+    path = Path(path); tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("wb") as handle:
+        np.savez_compressed(handle, **arrays); handle.flush(); os.fsync(handle.fileno())
+    os.replace(tmp, path)
+
+
+def verify_shard(npz_path, json_path, expected_seed=None):
+    metadata = json.loads(Path(json_path).read_text())
+    if metadata["shard_sha256"] != file_sha256(npz_path):
+        raise RuntimeError(f"shard hash mismatch: {npz_path}")
+    with np.load(npz_path, allow_pickle=True) as archive:
+        records = list(archive["records"])
+    seed = int(metadata["scene_seed"])
+    if expected_seed is not None and seed != expected_seed: raise RuntimeError("shard seed mismatch")
+    if len(records) != 24 or metadata["records"] != 24: raise RuntimeError("shard record count mismatch")
+    if [int(r["timestep"]) for r in records] != list(range(0, 120, 5)): raise RuntimeError("shard timestep mismatch")
+    if any(int(r["scene_seed"]) != seed for r in records): raise RuntimeError("record seed mismatch")
+    if any(r["learner_state_before"] != r["learner_state_after"] for r in records): raise RuntimeError("learner state mismatch")
+    if any(not r["oracle_replay_identical"] for r in records): raise RuntimeError("oracle replay mismatch")
+    return records, metadata
+
+
+def code_commit():
+    if os.environ.get("CODE_COMMIT"): return os.environ["CODE_COMMIT"]
+    try: return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    except Exception: return "uncommitted"
+
+
+def aggregate(out, seeds=range(2000, 2064)):
+    out = Path(out); all_records = []
+    for seed in seeds:
+        records, _ = verify_shard(out / "shards" / f"seed_{seed}.npz", out / "shards" / f"seed_{seed}.json", seed)
+        all_records.extend(records)
+    if len(all_records) != len(list(seeds)) * 24: raise RuntimeError("aggregate record count mismatch")
+    atomic_npz(out / "recovery_records.npz", records=np.asarray(all_records, dtype=object))
+    manifest = {"records": len(all_records), "scenes": len(list(seeds)),
+                "aggregate_sha256": file_sha256(out / "recovery_records.npz"),
+                "source_shards": [f"seed_{seed}.npz" for seed in seeds]}
+    atomic_json(out / "aggregate_manifest.json", manifest)
+    print(json.dumps(manifest), flush=True)
+
+
 def collect(args):
     meta = LeRobotDatasetMetadata("local/command0_multiview_32", root=args.dataset)
     runtime = load_runtime(args.teacher, meta=meta, dataset_root=args.dataset, device=args.device, stats_source="dataset")
     policy = runtime.policy; policy.eval()
     learner = SO101PickPlaceTask(seed=0); oracle = SO101PickPlaceTask(seed=0)
     renderers = {c: mujoco.Renderer(learner.model, height=IMG, width=IMG) for c in CAMERAS}
-    out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
+    out = Path(args.out); shards = out / "shards"; shards.mkdir(parents=True, exist_ok=True)
     learner.rng = np.random.default_rng(2000); learner.reset(command=0)
     pixel_diagnostic = render_diagnostic(learner, renderers)
     phase_tests = verify_phase_clones(learner, oracle)
@@ -215,8 +276,18 @@ def collect(args):
                                                         "learner_untouched": True,
                                                         "oracle_replay_deterministic": True,
                                                         "egl_repeat_render_diagnostic": pixel_diagnostic}, indent=2) + "\n")
-    records = []; seeds = [2000] if args.smoke else list(range(2000, 2064))
+    seeds = [2000] if args.smoke else list(range(2000, 2064)); started = time.monotonic()
+    completed = []; global_stages = {stage: 0 for stage in ("approach", "grasp", "transport", "release")}
     for seed in seeds:
+        npz_path, json_path = shards / f"seed_{seed}.npz", shards / f"seed_{seed}.json"
+        if npz_path.exists() and json_path.exists():
+            _, metadata = verify_shard(npz_path, json_path, seed); completed.append(seed)
+            for stage, count in metadata["stage_counts"].items(): global_stages[stage] += int(count)
+            print(f"resume skip verified seed={seed} completed={len(completed)}/{len(seeds)}", flush=True)
+    pending = [seed for seed in seeds if seed not in completed]
+    if args.max_scenes: pending = pending[:args.max_scenes]
+    for seed in pending:
+        records = []
         learner.rng = np.random.default_rng(seed); learner.reset(command=0); policy.reset()
         events = new_event_tracker()
         for t in range(args.cap):
@@ -248,30 +319,39 @@ def collect(args):
                 action = runtime.postprocessor(policy.select_action(obs)).squeeze(0).cpu().numpy()
             learner.step(action)
             update_event_tracker(learner, events)
-        if args.smoke and len(records) >= args.smoke_states: break
-    if args.smoke and len(records) < args.smoke_states:
-        raise RuntimeError(f"smoke collected only {len(records)} states")
-    np.savez_compressed(out / "recovery_records.npz", records=np.asarray(records, dtype=object))
-    stage_counts = {stage: sum(record["stage"] == stage for record in records) for stage in ("approach", "grasp", "transport", "release")}
-    manifest = {"source": "dagger", "records": len(records), "cameras": CAMERAS, "chunk_length": CHUNK,
-                "dataset_hash": sha256_tree(args.dataset), "teacher_hash": sha256_tree(args.teacher, patterns=("*.json", "*.safetensors")),
-                "privileged_policy_inputs": False, "sealed_heldout_excluded": True,
-                "twin_environment": True, "learner_untouched": True, "oracle_state_api": "mjSTATE_FULLPHYSICS",
-                "phase_clone_tests": phase_tests, "learner_actions_executed": len(seeds) * args.cap,
-                "stage_counts": stage_counts,
-                "first_state_hash": records[0]["learner_state_before"] if records else None,
-                "last_state_hash": records[-1]["learner_state_before"] if records else None,
-                "final_event_tracker": events}
-    manifest["egl_repeat_render_diagnostic"] = pixel_diagnostic
-    (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    print(json.dumps({"records": len(records), "out": str(out), "manifest": manifest}, indent=2))
+        if len(records) != 24: raise RuntimeError(f"seed {seed}: expected 24 records, got {len(records)}")
+        stage_counts = {stage: sum(record["stage"] == stage for record in records) for stage in global_stages}
+        atomic_npz(npz_path, records=np.asarray(records, dtype=object))
+        shard_metadata = {"scene_seed": seed, "records": len(records), "timestamps": [r["timestep"] for r in records],
+                          "stage_counts": stage_counts, "learner_action_count": args.cap,
+                          "learner_hash_checks": all(r["learner_state_before"] == r["learner_state_after"] for r in records),
+                          "oracle_replay_status": all(r["oracle_replay_identical"] for r in records),
+                          "dataset_hash": sha256_tree(args.dataset),
+                          "teacher_hash": sha256_tree(args.teacher, patterns=("*.json", "*.safetensors")),
+                          "code_commit": code_commit(), "shard_sha256": file_sha256(npz_path)}
+        atomic_json(json_path, shard_metadata); verify_shard(npz_path, json_path, seed)
+        completed.append(seed)
+        for stage, count in stage_counts.items(): global_stages[stage] += int(count)
+        elapsed = time.monotonic() - started; rate = elapsed / max(1, len(completed)); eta = rate * (len(seeds) - len(completed))
+        progress = {"status": "collecting" if len(completed) < len(seeds) else "complete",
+                    "completed_scenes": len(completed), "total_scenes": len(seeds), "total_records": len(completed) * 24,
+                    "stage_counts": global_stages, "elapsed_seconds": elapsed, "eta_seconds": eta,
+                    "completed_seeds": sorted(completed), "last_seed": seed}
+        atomic_json(out / "progress.json", progress)
+        print(f"progress scenes={len(completed)}/{len(seeds)} records={len(completed)*24} stages={global_stages} elapsed={elapsed:.1f}s eta={eta:.1f}s", flush=True)
+    if len(completed) == len(seeds): aggregate(out, seeds)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--teacher", required=True); parser.add_argument("--dataset", default="data/datasets/command0_multiview_32")
+    parser.add_argument("--teacher"); parser.add_argument("--dataset", default="data/datasets/command0_multiview_32")
     parser.add_argument("--out", required=True); parser.add_argument("--device", default="cuda")
     parser.add_argument("--cap", type=int, default=120); parser.add_argument("--interval", type=int, default=5)
     parser.add_argument("--smoke", action="store_true"); parser.add_argument("--smoke-states", type=int, default=4)
     parser.add_argument("--smoke-short", action="store_true")
-    collect(parser.parse_args())
+    parser.add_argument("--max-scenes", type=int, default=0); parser.add_argument("--aggregate", action="store_true")
+    args = parser.parse_args()
+    if args.aggregate: aggregate(args.out)
+    else:
+        if not args.teacher: parser.error("--teacher is required for collection")
+        collect(args)
