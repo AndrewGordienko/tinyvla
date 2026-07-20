@@ -126,6 +126,10 @@ def main() -> None:
     parser.add_argument("--repo-id", default="local/so101_reach")
     parser.add_argument("--root", default=str(DATASETS_ROOT / "so101_reach"))
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--student-stats-source", choices=["dataset", "checkpoint"], default="dataset",
+                        help="Where the student's normalizers come from. 'checkpoint' preserves the "
+                             "student's EXACT deployed preprocessing (use for recovery/warm-start so the "
+                             "observation/action schema does not drift); 'dataset' recomputes from --root.")
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -178,7 +182,8 @@ def main() -> None:
     dataset = FastChunkDataset(args.repo_id, root=args.root, delta_timestamps=delta_timestamps)
 
     student_runtime = load_runtime(
-        student_path, meta=meta, dataset_root=args.root, device=device, stats_source="dataset"
+        student_path, meta=meta, dataset_root=args.root, device=device,
+        stats_source=args.student_stats_source
     )
     if args.delta_actions is not None and args.delta_actions != student_runtime.delta_actions:
         raise SystemExit(

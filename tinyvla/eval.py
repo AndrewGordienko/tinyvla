@@ -19,20 +19,20 @@ import mujoco
 
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata  # datasets before policies
 from .task import SO101PickPlaceTask, COMMANDS
-from .collect import IMG, CAMERAS
+from .collect import IMG, DEFAULT_CAMERAS
 from .paths import ARTIFACTS_ROOT, CHECKPOINTS_ROOT, DATASETS_ROOT
 from .determinism import seed_everything
 from .eval_closedloop import evaluate_closed_loop
 from .runtime import experiment_metadata, load_runtime
 
 
-def build_obs(env, renderer, device):
+def build_obs(env, renderer, device, cameras=DEFAULT_CAMERAS):
     state = torch.from_numpy(env.data.qpos[:6].copy().astype(np.float32))
     obs = {
         "observation.state": state.unsqueeze(0).to(device),
         "task": [env.instruction],                                 # varies per command
     }
-    for cam in CAMERAS:
+    for cam in cameras:
         renderer.update_scene(env.data, camera=cam)
         img = torch.from_numpy(renderer.render()).permute(2, 0, 1).float() / 255.0
         obs[f"observation.images.{cam}"] = img.unsqueeze(0).to(device)
@@ -53,6 +53,9 @@ def main():
     ap.add_argument("--delta-actions", action="store_true", default=None,
                     help="Legacy assertion only; semantics are loaded automatically.")
     ap.add_argument("--output", default=str(ARTIFACTS_ROOT / "evaluations" / "latest.json"))
+    ap.add_argument("--n-action-steps", type=int, default=None,
+                    help="Override how many steps of each predicted chunk are executed before "
+                         "re-planning. Lower = more reactive (e.g. release timing), slower.")
     ap.add_argument("--allow-legacy-semantics", action="store_true",
                     help="Treat unmarked legacy dataset/checkpoint as 'absolute' actions "
                          "(off by default; unmarked artifacts error).")
@@ -71,6 +74,9 @@ def main():
             f"--delta-actions contradicts detected {runtime.action_semantics} runtime semantics"
         )
     policy = runtime.policy.eval()
+    if args.n_action_steps is not None:
+        policy.config.n_action_steps = args.n_action_steps
+        policy.reset()
     preprocessor, postprocessor = runtime.preprocessor, runtime.postprocessor
 
     metrics = evaluate_closed_loop(
@@ -98,6 +104,8 @@ def main():
     print(json.dumps(metrics, indent=2))
 
     if args.film:
+        configured = list(getattr(getattr(policy, "config", None), "image_features", {}) or {})
+        cameras = [key.removeprefix("observation.images.") for key in configured] or DEFAULT_CAMERAS
         env = SO101PickPlaceTask(seed=args.seed)
         renderer = mujoco.Renderer(env.model, height=IMG, width=IMG)
         big = mujoco.Renderer(env.model, height=360, width=480)
@@ -110,7 +118,7 @@ def main():
             policy.reset()
             film = []
             for t in range(horizon):
-                obs = preprocessor(build_obs(env, renderer, device))
+                obs = preprocessor(build_obs(env, renderer, device, cameras))
                 with torch.inference_mode():
                     action = policy.select_action(obs)
                 action = postprocessor(action).squeeze(0).cpu().numpy()
