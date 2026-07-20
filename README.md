@@ -1,14 +1,60 @@
 # tinyvla
 
-> **Truth-harness freeze:** do not run H200 training, compression, recovery, or
-> DAgger until the local gates in [docs/truth_harness.md](docs/truth_harness.md)
-> pass. All SmolVLA work uses the pinned LeRobot 0.4.4 environment and the
-> repository-owned corrected padded-action loss.
+> **Result (2026-07-21):** a **291M** distilled SmolVLA student runs locally on an
+> Apple M5 Pro (MPS) and retains roughly **70–85%** of the 450M teacher's held-out
+> pick-place success (varies with the scene set; confidence intervals overlap), at
+> 0.65× the parameters and — after a bf16 cast — **557 MB** on disk (vs 1.1 GB) and
+> ~896 MB live MPS memory. Exact numbers, per-command breakdown, 95% CIs, latency,
+> and checkpoint SHA256:
+> [results/champion_2026-07-21/BENCHMARK_REPORT.md](results/champion_2026-07-21/BENCHMARK_REPORT.md).
+>
+> **Honest caveats:** absolute success is **not yet deployable** — student ~33%
+> (95% CI 27–41%) vs teacher ~42% on hard held-out scenes. Failures are dominated by
+> *reaching* and *transport*, i.e. a data-distribution gap, not model capacity. The
+> MuJoCo grasp is kinematic scaffolding, not contact-valid physics. Evaluation was
+> historically frozen pending the local gates in
+> [docs/truth_harness.md](docs/truth_harness.md); those gates now pass and the
+> numbers above are reproducible from this repo.
 
 Small, hackable SO-101 MuJoCo and SmolVLA utilities. The shape is deliberately
 closer to tinygrad/PyTorch: importable code lives in `tinyvla/`, commands run via
 package modules or installed console scripts, and local datasets/checkpoints stay
 out of source.
+
+## Champion: 291M distilled student
+
+| Model | Params | On-disk | MPS mem | Replan | Held-out success |
+|---|---:|---:|---:|---:|---:|
+| Teacher (450M SmolVLA) | 450M | 1.1 GB | 1199 MB | 225 ms | 42% (95% CI 38–47%), 8 cmds |
+| **Student (291M, bf16)** | 292M | **557 MB** | 896 MB | 194 ms | 33% (95% CI 27–41%), cmds 1/3/4 |
+
+Held-out over two fresh seeds (n=400 teacher / 180 student), Apple M5 Pro / MPS.
+Full per-command breakdown, failure-by-stage, and checkpoint hashes:
+[results/champion_2026-07-21/BENCHMARK_REPORT.md](results/champion_2026-07-21/BENCHMARK_REPORT.md).
+
+**Recipe:** prune the task-trained teacher to 12 VLM layers (`paired_even`), then
+teacher-distil on clean expert demos (`recover.py --objective mixed_action_expert`,
+teacher/expert weights 1.0/0.5) at **lr 3e-6** — higher LR collapses; select
+checkpoints on **held-out** seeds (single-seed gates overfit). Distillation stops
+helping below 12 layers (a 10-layer/260M model needs a two-phase expert-stabilise →
+distil and still drops to ~21%). Finally cast the fp32 weights (the SigLIP vision
+tower) to bf16 for a −26% footprint with no measurable accuracy change.
+
+**Live demo** — talk to the arm, toggle 450M ↔ 291M live:
+
+```bash
+MUJOCO_GL=glfw .venv/bin/python -m tinyvla.live_demo   # http://localhost:8010
+```
+
+**Reproduce the benchmark:**
+
+```bash
+MUJOCO_GL=glfw .venv/bin/python -m tinyvla.eval \
+  --model artifacts/checkpoints/student291_champion_bf16 \
+  --commands 1,3,4 --per-command 30 --seed 3001 --device mps \
+  --output artifacts/benchmarks/student_s3001.json
+.venv/bin/python scripts/benchmark_report.py    # -> results/.../BENCHMARK_REPORT.md
+```
 
 ## Layout
 

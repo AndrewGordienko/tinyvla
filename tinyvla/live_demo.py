@@ -375,8 +375,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--student", default=str(CHECKPOINTS_ROOT /
-                    "student291_recover_brain_v1" / "best_closed_loop"))
+    ap.add_argument("--student", default=str(CHECKPOINTS_ROOT / "student291_champion_bf16"))
     ap.add_argument("--teacher", default=str(DATA_ROOT / "checkpoints" / "smolvla_pickplace"))
     ap.add_argument("--root", default=str(DATASETS_ROOT / "so101_pickplace"))
     ap.add_argument("--repo-id", default="local/so101_pickplace")

@@ -1,0 +1,8 @@
+{
+  "device": "Apple M5 Pro (MPS)",
+  "measured_date": "2026-07-21",
+  "n_action_steps": 50,
+  "note": "MPS working set = torch.mps.current_allocated_memory() after 2 warmup select_action calls, each model in an isolated process. Latency = median over ~70 steps; replan = steps where the action queue was empty (full VLA forward); cached-step = queue dequeue.",
+  "teacher": {"params_m": 450, "disk_mb": 1126, "mps_working_set_mb": 1199, "replan_ms": 225, "cached_step_ms": 1.54},
+  "student_bf16": {"params_m": 292, "disk_mb": 557, "mps_working_set_mb": 896, "replan_ms": 194, "cached_step_ms": 1.33}
+}
