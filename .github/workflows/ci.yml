@@ -26,19 +26,7 @@ jobs:
           pip install ruff
           ruff check --select E9,F63,F7,F82 tinyvla scripts
 
-  tests:
-    # Best-effort: installs base deps (no lerobot extra) and runs the non-heavy
-    # unit tests headlessly. Informational — does not gate the build yet.
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install package (base deps)
-        run: pip install -e '.[test]'
-      - name: Run non-heavy unit tests (headless MuJoCo)
-        env:
-          MUJOCO_GL: egl
-        run: pytest -m "not heavy" -q
+  # NOTE: functional tests import the LeRobot/MuJoCo stack and exercise closed-loop
+  # rollouts on Apple MPS, none of which run on Linux CI. Run them locally:
+  #   MUJOCO_GL=glfw .venv/bin/pytest -q
+  # and reproduce the champion benchmark via scripts/benchmark_report.py.
